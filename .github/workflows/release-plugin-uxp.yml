@@ -1,0 +1,33 @@
+name: Plugin - Photoshop (UXP)
+
+# Odpala sie TYLKO gdy zmieni sie cos w folderze UXP/.
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'UXP/**'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: plugins-release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Publish to the 'plugins' release (replace only this plugin)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view plugins >/dev/null 2>&1 || gh release create plugins \
+            --title "Plugins" \
+            --notes "Current plugin builds. This is NOT the app installer." \
+            --latest=false
+          cp UXP/com.spidx.workupload_PS.ccx UXP-Panel.ccx
+          gh release upload plugins UXP-Panel.ccx --clobber
