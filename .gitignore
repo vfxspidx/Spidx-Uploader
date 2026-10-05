@@ -1,0 +1,13 @@
+App/node_modules/
+App/incoming/
+App/helper.log
+App/helper-events.jsonl
+App/helper-config.json
+App/queue.json
+App/helper-state.json
+App/license-cache.json
+App/google-token.json
+App/last-upload.json
+App/device-id.json
+App/.pending-license-code
+App/.tray.pid

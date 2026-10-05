@@ -1,0 +1,347 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>Spidx Uploader — Premiere Pro</title>
+<style>
+    :root {
+        --bg: #1c1c1e;
+        --surface: #2c2c2e;
+        --surface-2: #3a3a3c;
+        --line: rgba(255,255,255,.10);
+        --text: #f5f5f7;
+        --dim: #98989d;
+        --faint: #636366;
+        --accent: #0a84ff;
+        --accent-2: #64d2ff;
+        --ok: #30d158;
+        --err: #ff453a;
+    }
+
+    * { box-sizing: border-box; }
+
+    html, body {
+        margin: 0; padding: 0; height: 100%;
+        background: var(--bg); color: var(--text);
+        font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Display", "Segoe UI Variable Text", "Segoe UI", "Helvetica Neue", sans-serif;
+        font-size: 12px; overflow-x: hidden; overflow-y: auto;
+        -webkit-font-smoothing: antialiased;
+        user-select: none; cursor: default;
+    }
+
+    .panel { padding: 12px 13px 16px; }
+
+    /* CEP's panel is plain Chromium, so a custom (thin, dark) scrollbar
+       is just normal -webkit-scrollbar CSS — applies to the whole panel
+       and to any inner scrolling area (e.g. the Leaderboard rows) alike,
+       instead of the stock light OS scrollbar clashing with this theme. */
+    ::-webkit-scrollbar { width: 9px; height: 9px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: var(--surface-2); border: 2px solid var(--bg); border-radius: 6px; }
+    ::-webkit-scrollbar-thumb:hover { background: var(--faint); }
+    ::-webkit-scrollbar-corner { background: transparent; }
+
+    .hdr { display: flex; align-items: center; gap: 7px; margin-bottom: 11px; }
+    .mark {
+        width: 22px; height: 22px; border-radius: 7px; flex-shrink: 0;
+        background: linear-gradient(160deg, #0a84ff, #0060df);
+        display: flex; align-items: center; justify-content: center;
+        font-size: 11px; font-weight: 700; color: #fff;
+    }
+    .title { font-size: 13px; font-weight: 600; letter-spacing: -.01em; margin-right: auto; }
+
+    .tier-badge {
+        font-size: 9px; font-weight: 700; letter-spacing: .05em; padding: 3px 6px;
+        border-radius: 5px; display: none; white-space: nowrap;
+        background: #3a3a3c; color: #aeaeb2;
+    }
+    .tier-badge.show { display: inline-block; }
+    .tier-badge.tier-pro { background: #4a3a12; color: #ffd60a; }
+    .tier-badge.tier-dev { background: #3a2450; color: #bf5af2; }
+    .tier-badge.tier-tester { background: #123a4a; color: #64d2ff; }
+
+    .warn-box {
+        display: none; padding: 8px 10px; margin-bottom: 10px; border-radius: 9px;
+        font-size: 10.5px; line-height: 1.45; color: #ffce6a;
+        background: rgba(255,176,32,.1); border: 1px solid rgba(255,176,32,.3);
+    }
+    .warn-box.show { display: block; }
+
+    .card {
+        background: var(--surface); border: 1px solid var(--line); border-radius: 11px;
+        padding: 12px; text-align: center; transition: border-color .25s ease;
+    }
+    .card.ok { border-color: var(--ok); }
+    .card.error { border-color: var(--err); }
+    .card.pulse { animation: pulse .3s ease; }
+    @keyframes pulse { from { transform: scale(.97); opacity: .75; } to { transform: scale(1); opacity: 1; } }
+
+    .card-title { font-size: 12.5px; font-weight: 600; }
+    .card-sub { font-size: 10.5px; color: var(--dim); margin-top: 4px; line-height: 1.45; word-break: break-word; }
+    .card-sub.ok { color: var(--ok); }
+    .card-sub.error { color: var(--err); }
+
+    .prog-track { height: 5px; background: rgba(255,255,255,.12); border-radius: 3px; margin: 10px 0 8px; overflow: hidden; }
+    .prog-fill {
+        height: 5px; width: 0%; border-radius: 3px;
+        background: var(--accent);
+        transition: width .35s cubic-bezier(.4,0,.2,1);
+    }
+    .prog-fill.done { background: var(--ok); }
+    .prog-fill.indeterminate {
+        width: 38% !important; animation: slide 1.1s ease-in-out infinite;
+    }
+    @keyframes slide { 0% { margin-left: -38%; } 100% { margin-left: 100%; } }
+
+    .label { font-size: 9.5px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase;
+             color: var(--faint); margin: 14px 0 6px; }
+
+    .seg { display: flex; gap: 6px; }
+    .seg button {
+        flex: 1; padding: 7px 4px; border-radius: 8px; border: 1px solid var(--line);
+        background: var(--surface); color: var(--dim); font-family: inherit;
+        font-size: 11.5px; font-weight: 600; cursor: pointer; transition: .15s ease;
+    }
+    .seg button:hover:not(:disabled) { color: var(--text); border-color: #4a4a55; }
+    .seg button.active {
+        color: #fff; border-color: var(--accent);
+        background: rgba(10,132,255,.22);
+    }
+    .seg button:disabled { opacity: .35; cursor: not-allowed; }
+
+    select, input[type="text"] {
+        width: 100%; background: var(--surface); border: 1px solid var(--line); color: var(--text);
+        border-radius: 8px; padding: 7px 9px; font-size: 11.5px; font-family: inherit;
+    }
+    select:focus, input:focus { outline: none; border-color: var(--accent); }
+
+    .hidden-row { display: none; }
+    .hidden-row.show { display: block; }
+
+    .btn {
+        width: 100%; margin-top: 14px; padding: 11px; border: none; border-radius: 10px;
+        font-family: inherit; font-size: 12.5px; font-weight: 700; color: #fff; cursor: pointer;
+        background: var(--accent);
+        transition: filter .15s ease, transform .1s ease;
+    }
+    .btn:hover:not(:disabled) { filter: brightness(1.12); }
+    .btn:active:not(:disabled) { transform: translateY(1px); }
+    .btn:disabled { opacity: .55; cursor: default; }
+    .btn.success { background: var(--ok); }
+    .btn.error { background: var(--err); }
+
+    .btn-row { display: flex; gap: 8px; }
+    .btn-row .btn { width: auto; flex: 1; }
+    .btn.secondary { background: var(--surface-2); border: 1.5px solid var(--line); }
+
+    .file-row {
+        display: none; align-items: center; gap: 9px; margin-top: 12px;
+        padding: 9px 10px; background: var(--surface); border: 1px solid var(--line); border-radius: 10px;
+    }
+    .file-row.show { display: flex; }
+    .file-thumb {
+        width: 30px; height: 30px; border-radius: 7px; flex-shrink: 0;
+        background: var(--surface-2); color: var(--dim);
+        display: flex; align-items: center; justify-content: center;
+        font-size: 8.5px; font-weight: 700; letter-spacing: .04em;
+    }
+    .file-meta { min-width: 0; }
+    .file-name { font-size: 11px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .file-size { font-size: 10px; color: var(--faint); margin-top: 2px; }
+
+    .batch-progress { display: none; margin-top: 12px; }
+    .batch-progress.show { display: block; }
+    .dots { display: flex; gap: 5px; justify-content: center; margin-bottom: 7px; }
+    .dot { width: 8px; height: 8px; border-radius: 50%; background: rgba(255,255,255,.12); }
+    .dot.filled { background: var(--accent-2); }
+    .batch-text { font-size: 10.5px; color: var(--dim); text-align: center; margin-bottom: 8px; }
+    .batch-actions { display: flex; gap: 6px; }
+    .batch-actions button {
+        flex: 1; padding: 7px; border-radius: 8px; border: 1px solid var(--line);
+        background: var(--surface-2); color: var(--dim); font-family: inherit;
+        font-size: 11px; font-weight: 600; cursor: pointer;
+    }
+    .batch-actions button:hover { color: var(--text); }
+    .batch-actions button.danger:hover { color: var(--err); border-color: rgba(255,90,82,.4); }
+
+    .foot { margin-top: 13px; display: flex; justify-content: space-between; gap: 8px; font-size: 10px; }
+    .link { color: var(--accent-2); cursor: pointer; }
+    .link:hover { text-decoration: underline; }
+    .foot .path { color: var(--faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; direction: rtl; }
+
+    /* ---- tabs ---- */
+    .tabs { display: flex; gap: 6px; margin-bottom: 12px; }
+    .tab-btn {
+        flex: 1; padding: 7px 4px; border-radius: 8px; border: 1px solid var(--line);
+        background: var(--surface); color: var(--dim); font-family: inherit; font-size: 11.5px;
+        font-weight: 600; cursor: pointer; transition: background .15s ease, color .15s ease;
+    }
+    .tab-btn:hover:not(.active) { background: var(--surface-2); color: var(--text); }
+    .tab-btn.active { background: var(--accent); color: #fff; border-color: transparent; }
+    .tab-btn.locked { opacity: .55; cursor: default; }
+    .tab-btn.locked:hover { background: var(--surface); color: var(--dim); }
+    .tab-page { display: none; }
+    .tab-page.active { display: block; animation: spidx-fade-in .18s ease; }
+    @keyframes spidx-fade-in {
+        from { opacity: 0; transform: translateY(3px); }
+        to   { opacity: 1; transform: translateY(0); }
+    }
+
+    /* ---- leaderboard tab ---- */
+    .lb-row { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+    .lb-label { font-size: 11px; color: var(--dim); flex-shrink: 0; }
+    .lb-row select {
+        flex: 1; min-width: 0; padding: 6px 8px; border-radius: 8px; border: 1px solid var(--line);
+        background: var(--surface); color: var(--text); font-family: inherit; font-size: 11.5px;
+    }
+    .lb-refresh {
+        flex-shrink: 0; padding: 6px 10px; border-radius: 8px; border: 1px solid var(--line); background: var(--surface-2);
+        color: var(--text); font-family: inherit; font-size: 11px; cursor: pointer; transition: filter .15s ease;
+    }
+    .lb-refresh:hover { filter: brightness(1.15); }
+    .lb-refresh:active { transform: translateY(1px); }
+    .lb-search {
+        width: 100%; margin-bottom: 8px; padding: 7px 9px; border-radius: 8px; border: 1px solid var(--line);
+        background: var(--surface); color: var(--text); font-family: inherit; font-size: 11.5px; box-sizing: border-box;
+    }
+    .lb-table {
+        border: 1px solid var(--line); border-radius: 10px; overflow: hidden; margin: 8px 0;
+        max-width: 100%;
+    }
+    .lb-head, .lb-item {
+        display: grid; grid-template-columns: 22px minmax(0, 1fr) 58px;
+        align-items: center; gap: 6px; padding: 8px 10px; font-size: 11px; box-sizing: border-box;
+    }
+    .lb-head { background: var(--surface-2); color: var(--dim); font-weight: 700; }
+    .lb-rows { max-height: 220px; overflow-y: auto; overflow-x: hidden; }
+    .lb-item {
+        cursor: pointer; border-top: 1px solid var(--line);
+        transition: background .12s ease; animation: spidx-row-in .16s ease both;
+    }
+    @keyframes spidx-row-in {
+        from { opacity: 0; transform: translateX(-3px); }
+        to   { opacity: 1; transform: translateX(0); }
+    }
+    .lb-item:nth-child(n+9) { animation: none; } /* keep it snappy past the first screenful */
+    .lb-item:hover { background: var(--surface-2); }
+    .lb-item.selected { background: rgba(10,132,255,.18); }
+    .lb-item span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .lb-item .pts { text-align: right; font-variant-numeric: tabular-nums; }
+    .lb-head span:last-child { text-align: right; }
+    .lb-empty { padding: 16px 10px; text-align: center; color: var(--dim); font-size: 11.5px; }
+</style>
+</head>
+<body>
+<div class="panel">
+    <div class="hdr">
+        <div class="mark">S</div>
+        <div class="title">Spidx Uploader</div>
+        <span class="tier-badge" id="tierBadge"></span>
+    </div>
+
+    <div class="tabs" id="tabs">
+        <button class="tab-btn active" id="tabBtnUploader" data-tab="tabUploader">Uploader</button>
+        <button class="tab-btn" id="tabBtnLeaderboard" data-tab="tabLeaderboard">Leaderboard</button>
+        <button class="tab-btn" id="tabBtnProps" data-tab="tabProps">Properties</button>
+    </div>
+
+    <div class="tab-page active" id="tabUploader">
+    <div class="warn-box" id="deviceLimitWarning">
+        Device limit reached — this computer counts as a 3rd device on a paid tier, so it runs as Free here.
+    </div>
+
+    <div class="card" id="card">
+        <div class="card-title" id="cardTitle">Ready</div>
+        <div class="card-sub" id="cardSub">Open a sequence and hit Upload.</div>
+    </div>
+
+    <div class="prog-track"><div class="prog-fill" id="progFill"></div></div>
+
+    <div class="label">Files per upload</div>
+    <div class="seg" id="batchSeg">
+        <button class="batch-opt active" data-count="1">1</button>
+        <button class="batch-opt" data-count="2">2</button>
+        <button class="batch-opt" data-count="3">3</button>
+    </div>
+
+    <div class="hidden-row" id="folderNameRow">
+        <div class="label">Client / project name</div>
+        <input type="text" id="folderNameInput" placeholder="Drive subfolder name">
+    </div>
+
+    <div class="btn-row">
+        <button class="btn" id="upload">Upload</button>
+        <button class="btn secondary" id="uploadPs" disabled>Photoshop + Upload</button>
+    </div>
+    <div class="card-sub" id="routeLine" style="margin-top:6px;"></div>
+
+    <div class="file-row" id="fileRow">
+        <div class="file-thumb" id="fileThumb">PNG</div>
+        <div class="file-meta">
+            <div class="file-name" id="fileName">—</div>
+            <div class="file-size" id="fileSize">—</div>
+        </div>
+    </div>
+
+    <div class="batch-progress" id="batchProgress">
+        <div class="dots" id="batchDots"></div>
+        <div class="batch-text" id="batchProgressText">Collecting...</div>
+        <div class="batch-actions">
+            <button id="sendNow">Send now</button>
+            <button id="cancelBatch" class="danger">Cancel</button>
+        </div>
+    </div>
+
+    <div class="foot">
+        <span class="link" id="changeFolder">Change incoming folder</span>
+        <span class="path" id="folderPath"></span>
+    </div>
+    <div class="foot">
+        <span class="link" id="changePreset">Change preset (.epr)</span>
+        <span class="path" id="presetPathLabel"></span>
+    </div>
+    </div>
+
+    <div class="tab-page" id="tabLeaderboard">
+        <div class="lb-row">
+            <span class="lb-label">Region</span>
+            <select id="lbRegion">
+                <option value="All">All</option>
+                <option value="EU">EU</option>
+                <option value="NAC">NAC</option>
+            </select>
+            <button class="lb-refresh" id="lbRefresh">Refresh</button>
+        </div>
+        <input type="text" id="lbSearch" class="lb-search" placeholder="Search nick...">
+        <div class="card-sub" id="lbStatus">Connecting...</div>
+
+        <div class="lb-table" id="lbTable">
+            <div class="lb-head">
+                <span>#</span><span>Nick</span><span>Points</span>
+            </div>
+            <div class="lb-rows" id="lbRows"></div>
+        </div>
+
+        <button class="btn secondary" id="lbCopy" disabled>Copy Nick</button>
+        <div class="card-sub" id="lbMessage"></div>
+    </div>
+
+    <div class="tab-page" id="tabProps">
+        <div class="card-sub" id="propsStatus">Select a Graphics (MOGRT) clip on the timeline.</div>
+
+        <div class="label">Text property</div>
+        <select id="propsSelect"></select>
+
+        <div class="label">Nick</div>
+        <div class="card-sub" id="propsNickHint">Click a row on the Leaderboard tab to pick a nick, or type one below.</div>
+        <input type="text" id="propsNickInput" class="lb-search" style="margin-top:8px;" placeholder="Nick...">
+
+        <button class="btn" id="propsApply" disabled>Apply</button>
+        <div class="card-sub" id="propsMessage"></div>
+    </div>
+
+</div>
+
+<script src="./index.js"></script>
+</body>
+</html>

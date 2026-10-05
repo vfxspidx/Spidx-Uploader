@@ -1,0 +1,38 @@
+{
+  "destination": "drive",
+  "drive": {
+    "clientId": "",
+    "clientSecret": "",
+    "folderName": "Spidx Uploads"
+  },
+  "license": {
+    "checkUrl": ""
+  },
+  "preferredBrowser": "auto",
+  "autoRetry": {
+    "enabled": true,
+    "maxAttempts": 3,
+    "delaySeconds": 10
+  },
+  "notifications": {
+    "enabled": false
+  },
+  "cleanup": {
+    "enabled": true,
+    "afterDays": 2
+  },
+  "browserIdle": {
+    "enabled": true,
+    "timeoutSeconds": 120
+  },
+  "batch": {
+    "timeoutSeconds": 120
+  },
+  "throttle": {
+    "enabled": true,
+    "minMs": 500,
+    "maxMs": 2000
+  },
+  "cameraRawPreset": null,
+  "dashboardTourSeen": true
+}

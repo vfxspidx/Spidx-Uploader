@@ -1,0 +1,17 @@
+{
+  "name": "spidx-workupload-helper",
+  "version": "2.7.3",
+  "private": true,
+  "description": "Spidx Uploader helper for Photoshop UXP",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "install-browser": "playwright install chromium firefox"
+  },
+  "dependencies": {
+    "googleapis": "^144.0.0",
+    "node-systray-v2": "npm:systray2@^2.1.4",
+    "playwright": "^1.63.0",
+    "sharp": "^0.33.5"
+  }
+}

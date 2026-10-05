@@ -1,0 +1,45 @@
+Spidx Uploader for Premiere Pro — one-time setup
+=================================================
+
+Why this step exists
+---------------------
+After Effects has a single scripting call that grabs the current frame
+of a comp as PNG (CompItem.saveFrameToPng). Premiere Pro's scripting API
+has no equivalent for a sequence. The documented way to export a single
+frame from a script is Sequence.exportAsMediaDirect(), and that call
+needs an export preset file (.epr) telling Media Encoder what format to
+write. Preset files aren't something a script can safely generate from
+scratch — they're tied to the exact list of encoders installed with your
+Premiere Pro version — so this is a one-time step done through
+Premiere's own UI, not something the panel can do for you.
+
+Steps
+-----
+1. Open Premiere Pro, open any project with a sequence in it.
+2. Select the sequence, then File > Export > Media... (Ctrl/Cmd+M).
+3. In the Export Settings dialog:
+     Format:        PNG
+     Preset:        Match Source - High bitrate (or any PNG preset)
+     Uncheck "Export Video" is NOT needed — leave video export on.
+     Range:         doesn't matter, this preset is only used for its
+                    format settings, not its range.
+4. Click "Save Preset..." (the small disk icon near the Preset dropdown).
+5. Name it exactly:  pngframe
+6. Cancel out of the Export Settings dialog — you don't need to actually
+   run this export, only save the preset.
+7. Restart Premiere Pro and reopen the Spidx Uploader panel.
+
+That's it — no copying the file anywhere. Premiere saves it straight
+into Media Encoder's own Presets folder (typically
+%APPDATA%\Adobe\Adobe Media Encoder\<version>\Presets\pngframe.epr on
+Windows), and the panel now looks for it there directly, checking every
+installed Media Encoder version folder so it doesn't matter which one
+you're on.
+
+You only need to do this once per machine. host/spidx.jsx will tell you
+clearly if it still can't find pngframe.epr anywhere.
+
+(Upgrading from an older install that had you copy the file into this
+panel's own presets/ folder too: that copy still works fine and is
+checked first, so you don't need to remove it — but you're free to
+delete it, the Media Encoder copy alone is now enough.)

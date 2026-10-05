@@ -1,0 +1,59 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ExtensionManifest Version="7.0" ExtensionBundleId="com.spidx.uploader.ae"
+                   ExtensionBundleVersion="2.4.0"
+                   ExtensionBundleName="Spidx Uploader"
+                   xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+    <ExtensionList>
+        <Extension Id="com.spidx.uploader.ae.panel" Version="2.4.0"/>
+    </ExtensionList>
+
+    <ExecutionEnvironment>
+        <HostList>
+            <!-- After Effects. UXP panels still don't exist for AE, so this
+                 half of the plugin is CEP + ExtendScript on purpose. -->
+            <Host Name="AEFT" Version="[17.0,99.9]"/>
+        </HostList>
+        <LocaleList>
+            <Locale Code="All"/>
+        </LocaleList>
+        <RequiredRuntimeList>
+            <RequiredRuntime Name="CSXS" Version="8.0"/>
+        </RequiredRuntimeList>
+    </ExecutionEnvironment>
+
+    <DispatchInfoList>
+        <Extension Id="com.spidx.uploader.ae.panel">
+            <DispatchInfo>
+                <Resources>
+                    <MainPath>./client/index.html</MainPath>
+                    <ScriptPath>./host/spidx.jsx</ScriptPath>
+                    <CEFCommandLine>
+                        <Parameter>--allow-file-access</Parameter>
+                        <Parameter>--allow-file-access-from-files</Parameter>
+                        <!-- The Leaderboard tab fetches from SpidxTracker's own API host
+                             (not the same origin as this file:// panel) — CEP's embedded
+                             Chromium enforces CORS like any browser, and that API doesn't
+                             send CORS headers, so this flag is what lets the fetch through. -->
+                        <Parameter>--disable-web-security</Parameter>
+                    </CEFCommandLine>
+                </Resources>
+                <Lifecycle>
+                    <AutoVisible>true</AutoVisible>
+                </Lifecycle>
+                <UI>
+                    <Type>Panel</Type>
+                    <Menu>Spidx Uploader</Menu>
+                    <Geometry>
+                        <Size><Height>460</Height><Width>320</Width></Size>
+                        <MinSize><Height>320</Height><Width>260</Width></MinSize>
+                        <MaxSize><Height>1200</Height><Width>600</Width></MaxSize>
+                    </Geometry>
+                    <Icons>
+                        <Icon Type="Normal">./icons/icon24@1x.png</Icon>
+                        <Icon Type="RollOver">./icons/icon24@2x.png</Icon>
+                    </Icons>
+                </UI>
+            </DispatchInfo>
+        </Extension>
+    </DispatchInfoList>
+</ExtensionManifest>
