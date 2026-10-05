@@ -1,0 +1,47 @@
+name: Plugin - After Effects
+
+# Odpala sie TYLKO gdy zmieni sie cos w folderze CEP-AE/.
+# Pozostale pluginy i aplikacja (installer) nie sa ruszane.
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'CEP-AE/**'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+# Jeden release 'plugins' wspoldzielony przez 3 workflowy - wykonuja sie po kolei.
+concurrency:
+  group: plugins-release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read version from manifest
+        id: ver
+        run: |
+          VERSION=$(grep -oP 'ExtensionBundleVersion="\K[^"]+' CEP-AE/CSXS/manifest.xml)
+          [ -n "$VERSION" ] || { echo "::error::No ExtensionBundleVersion in CEP-AE/CSXS/manifest.xml"; exit 1; }
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Zip plugin
+        run: cd CEP-AE && zip -r "../CEP-AE-v${{ steps.ver.outputs.version }}.zip" .
+
+      - name: Publish to the 'plugins' release (replace only this plugin)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view plugins >/dev/null 2>&1 || gh release create plugins \
+            --title "Plugins" \
+            --notes "Current plugin builds. This is NOT the app installer." \
+            --latest=false
+          for old in $(gh release view plugins --json assets -q '.assets[].name' | grep '^CEP-AE-v' || true); do
+            gh release delete-asset plugins "$old" -y
+          done
+          gh release upload plugins "CEP-AE-v${{ steps.ver.outputs.version }}.zip" --clobber
