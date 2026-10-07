@@ -16,6 +16,8 @@
 ;                                     produce it with UDT)
 ;          CEP-AE\                   (After Effects panel)
 ;          CEP-PPRO\                 (Premiere Pro panel)
+;          VEGAS-Plugin\             (VEGAS Pro plugin: C# source + installer
+;                                     scripts; built on the user's machine)
 ;          Spidx Uploader.vbs
 ;          README.txt
 ;          Installer\SpidxUploader.iss   <- this file
@@ -69,13 +71,14 @@ Name: "desktopicon";  Description: "{cm:CreateDesktopIcon}"; GroupDescription: "
 Name: "autostart";    Description: "Start Spidx Uploader when I sign in to Windows"
 Name: "aepanel";      Description: "Install the After Effects panel (close After Effects first)"
 Name: "pprpanel";     Description: "Install the Premiere Pro panel (close Premiere Pro first)"
+Name: "vegaspanel";   Description: "Install the VEGAS Pro plugin (close VEGAS first; it is built for your VEGAS version)"; Flags: unchecked
 Name: "pspanel";      Description: "Install the Photoshop panel (requires Creative Cloud desktop app, close Photoshop first)"
 Name: "launchafter";  Description: "Start Spidx Uploader when setup finishes"; Flags: unchecked
 
 [Files]
 ; ---- helper / engine ----
 Source: "..\App\*";    DestDir: "{app}\App";    Flags: ignoreversion recursesubdirs createallsubdirs; \
-    Excludes: "node_modules\*,incoming\*,browser-profile\*,helper.log,helper-events.jsonl,queue.json,helper-state.json,license-cache.json,google-token.json,last-upload.json,device-id.json,.pending-license-code,.tray.pid"
+    Excludes: "node_modules\*,incoming\*,browser-profile\*,helper.log,helper-events.jsonl,queue.json,helper-state.json,license-cache.json,google-token.json,last-upload.json,device-id.json,.pending-license-code,.tray.pid,diagnostics\*,update-cache.json,plugin-updates-cache.json"
 ; ---- Photoshop (UXP) panel: ONLY the packaged .ccx ships -- the raw UXP
 ; source folder is intentionally left out of the installer entirely.
 Source: "..\UXP\{#UxpCcxFile}"; DestDir: "{app}\UXP"; Flags: ignoreversion skipifsourcedoesntexist; Tasks: pspanel
@@ -93,6 +96,10 @@ Source: "..\CEP-PPRO\client\*";   DestDir: "{userappdata}\Adobe\CEP\extensions\{
 Source: "..\CEP-PPRO\host\*";     DestDir: "{userappdata}\Adobe\CEP\extensions\{#CepExtIdPPro}\host";     Flags: ignoreversion recursesubdirs createallsubdirs; Tasks: pprpanel
 Source: "..\CEP-PPRO\icons\*";    DestDir: "{userappdata}\Adobe\CEP\extensions\{#CepExtIdPPro}\icons";    Flags: ignoreversion recursesubdirs createallsubdirs; Tasks: pprpanel
 Source: "..\CEP-PPRO\presets\*";  DestDir: "{userappdata}\Adobe\CEP\extensions\{#CepExtIdPPro}\presets";  Flags: ignoreversion recursesubdirs createallsubdirs skipifsourcedoesntexist; Tasks: pprpanel
+; ---- VEGAS Pro plugin: the C# source + install scripts ship in {app}; the
+; "vegaspanel" task below (or the wizard / Dashboard) builds and installs the
+; .dll against whatever VEGAS the user has, so there is no prebuilt binary. ----
+Source: "..\VEGAS-Plugin\*"; DestDir: "{app}\VEGAS-Plugin"; Flags: ignoreversion recursesubdirs createallsubdirs
 ; ---- launchers + docs ----
 Source: "..\{#AppExeVbs}";                DestDir: "{app}"; Flags: ignoreversion
 Source: "..\Install Desktop Shortcut.vbs"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
@@ -145,6 +152,11 @@ Name: "{userstartup}\{#AppName}";       Filename: "{app}\{#AppExeVbs}"; IconFile
 Filename: "{code:GetUPIAPath}"; Parameters: "/install ""{app}\UXP\{#UxpCcxFile}"""; \
     StatusMsg: "Installing Photoshop panel..."; Flags: runhidden skipifdoesntexist; Tasks: pspanel
 
+; Build + install the VEGAS Pro plugin (the .bat asks for admin rights itself and
+; shows its own console so errors are visible).
+Filename: "{app}\VEGAS-Plugin\Install VEGAS Plugin.bat"; WorkingDir: "{app}\VEGAS-Plugin"; \
+    StatusMsg: "Installing the VEGAS Pro plugin..."; Flags: shellexec waituntilterminated skipifdoesntexist; Tasks: vegaspanel
+
 ; First launch runs the visible batch once: it installs the npm
 ; dependencies (playwright, sharp, systray) and then hands over to the
 ; tray app, which opens the first-run wizard in the browser.
@@ -158,10 +170,17 @@ Filename: "{app}\App\start-tray.bat"; WorkingDir: "{app}\App"; \
 Filename: "{code:GetUPIAPath}"; Parameters: "/remove {#UxpPluginId}"; \
     Flags: runhidden skipifdoesntexist; RunOnceId: "RemoveUxpPlugin"
 
+; Remove the VEGAS plugin .dll too (no-op when it was never installed).
+Filename: "{app}\VEGAS-Plugin\Uninstall VEGAS Plugin.bat"; Parameters: "/silent"; WorkingDir: "{app}\VEGAS-Plugin"; \
+    Flags: shellexec runhidden skipifdoesntexist; RunOnceId: "RemoveVegasPlugin"
+
 [UninstallDelete]
 ; Runtime files the installer never shipped, so Inno wouldn't remove them.
 Type: filesandordirs; Name: "{app}\App\node_modules"
 Type: filesandordirs; Name: "{app}\App\browser-profile"
+Type: filesandordirs; Name: "{app}\App\diagnostics"
+Type: files;          Name: "{app}\App\plugin-updates-cache.json"
+Type: files;          Name: "{app}\App\update-cache.json"
 Type: filesandordirs; Name: "{userappdata}\Adobe\CEP\extensions\{#CepExtIdAE}"
 Type: filesandordirs; Name: "{userappdata}\Adobe\CEP\extensions\{#CepExtIdPPro}"
 Type: files;          Name: "{app}\App\helper.log"
@@ -240,6 +259,9 @@ end;
 //  Node app specifically, and doubles as the single-instance guard that
 //  stops a double-launch from opening two tray icons.
 //
+//  The /FI filter makes taskkill touch the PID ONLY if it really is a node.exe:
+//  a stale PID file can name a recycled PID that now belongs to something else.
+//
 //  /T also kills the child server.js (spawned by tray.js) in the same
 //  tree. Silently does nothing if the file's missing or the PID is
 //  already dead (ResultCode is ignored on purpose) — a fresh install,
@@ -261,7 +283,7 @@ begin
   if Pid <= 0 then
     Exit;
 
-  Exec(ExpandConstant('{sys}\taskkill.exe'), '/PID ' + IntToStr(Pid) + ' /T /F',
+  Exec(ExpandConstant('{sys}\taskkill.exe'), '/FI "IMAGENAME eq node.exe" /PID ' + IntToStr(Pid) + ' /T /F',
        '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
 
   // Give Windows a moment to actually release everything before Files copy.

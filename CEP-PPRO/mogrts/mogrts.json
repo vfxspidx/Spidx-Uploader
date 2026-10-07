@@ -1,0 +1,17 @@
+[
+  {
+    "file": "IGN.mogrt",
+    "name": "IGN Main",
+    "description": "\"ELIMINATED [nick]\"
+  },
+  {
+    "file": "IGN_Clean.mogrt",
+    "name": "IGN Clean",
+    "description": "\"ELIMINATED [nick]\"
+  },
+  {
+    "file": "190_Damage.mogrt",
+    "name": "190 Damage",
+    "description": "Damage For Thumbnails."
+  }
+]

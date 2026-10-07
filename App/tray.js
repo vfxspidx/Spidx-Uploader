@@ -72,10 +72,9 @@ let child = null;
 let status = "stopped"; // "stopped" | "running" | "error"
 let systray = null;
 let trayReady = false;
-let trayRestarts = 0;
-const MAX_TRAY_RESTARTS = 3;
 let pendingMenuUpdate = false;
 let updateInfo = { hasUpdate: false, latestVersion: null, downloadUrl: null };
+let pluginUpdateInfo = { hasUpdates: false, updates: [] };
 
 /* ---------------------------------------------------------------------- */
 /*  Log file                                                              */
@@ -367,9 +366,24 @@ function statusLabel() {
 function itemDefs() {
     return [
         { key: "status", title: `Status: ${statusLabel()}`, enabled: false },
-        ...(updateInfo.hasUpdate ? [
-            { key: "checkUpdate", title: `\u2B06 Update available \u2014 ${updateInfo.latestVersion}`, enabled: true },
-        ] : []),
+        // ALWAYS present (hidden until an update exists). The tray binary fixes the
+        // item list when it starts and reports clicks by position, so the list must
+        // never grow/shrink later — adding this item on the fly used to shift every
+        // index below it and make clicks trigger the wrong menu entry.
+        {
+            key: "checkUpdate",
+            title: updateInfo.hasUpdate ? `\u2B06 Update available \u2014 ${updateInfo.latestVersion}` : "Update available",
+            enabled: !!updateInfo.hasUpdate,
+            hidden: !updateInfo.hasUpdate
+        },
+        // Hidden until plugin updates exist - always present for the same
+        // reason as the app-update item above (stable positions).
+        {
+            key: "pluginUpdates",
+            title: pluginUpdateInfo.hasUpdates ? "\u2B06 Plugin updates available \u2014 open Dashboard" : "Plugin updates",
+            enabled: !!pluginUpdateInfo.hasUpdates,
+            hidden: !pluginUpdateInfo.hasUpdates
+        },
         { separator: true },
         { key: "start", title: "Start helper", enabled: status !== "running" },
         { key: "stop", title: "Stop helper", enabled: status === "running" },
@@ -377,6 +391,7 @@ function itemDefs() {
         { separator: true },
         { key: "changeFolder", title: "Change incoming folder\u2026", enabled: true },
         { key: "openLog", title: "Open log", enabled: true },
+        { key: "diagnostics", title: "Create diagnostics file\u2026", enabled: true },
         { key: "copyLastLink", title: "Copy last upload link", enabled: hasLastUpload() },
         { separator: true },
         { key: "dashboard", title: "Open Dashboard", enabled: true },
@@ -399,7 +414,7 @@ function buildTrayItems(defs) {
     return defs.map(def =>
         def.separator
             ? SysTrayLib.separator
-            : { title: def.title, tooltip: "", checked: false, enabled: def.enabled }
+            : { title: def.title, tooltip: "", checked: false, enabled: def.enabled, hidden: !!def.hidden }
     );
 }
 
@@ -461,6 +476,27 @@ function handleClick(seqId) {
                 appendLog(`[TRAY] Could not open the log file: ${error.message}\n`);
             }
             break;
+        case "diagnostics":
+            (async () => {
+                try {
+                    const { buildDiagnostics } = require("./diagnostics.js");
+                    const result = await buildDiagnostics(msg => appendLog(`[TRAY][Diagnostics] ${msg}\n`));
+                    if (!result.ok) {
+                        showMessageBox("Spidx Uploader", `Could not create the diagnostics file: ${result.message}`);
+                        return;
+                    }
+                    try {
+                        const child = spawn("explorer.exe", ["/select," + result.path], { detached: true, windowsHide: false });
+                        child.on("error", () => {});
+                        child.unref();
+                    } catch {}
+                    showMessageBox("Spidx Uploader", `Diagnostics file created (${result.summary.fail} failed, ${result.summary.warn} warning checks).\n\nSend this file to support:\n${result.path}`);
+                } catch (error) {
+                    appendLog(`[TRAY] Diagnostics failed: ${error.message}\n`);
+                    showMessageBox("Spidx Uploader", `Could not create the diagnostics file: ${error.message}`);
+                }
+            })();
+            break;
         case "copyLastLink":
             (async () => {
                 const last = readLastUpload();
@@ -475,6 +511,7 @@ function handleClick(seqId) {
                 }
             })();
             break;
+        case "pluginUpdates":
         case "dashboard":
             try {
                 const { openDashboard } = require("./dashboard.js");
@@ -637,30 +674,7 @@ async function startTrayIcon() {
             updateMenu();
         }
         if (typeof systray.onExit === "function") {
-            try {
-                const thisTray = systray;
-                thisTray.onExit(() => {
-                    // Was: process.exit(0). That made the WHOLE app vanish
-                    // (console: "Tray app has stopped.") whenever systray's
-                    // little helper .exe died - antivirus, a bad menu
-                    // update, a blocked temp folder. The icon is only a
-                    // convenience: log it, keep the helper alive, and try
-                    // to bring the icon back a few times.
-                    if (systray !== thisTray) return; // already replaced / intentionally killed
-                    appendLog(`[TRAY] Tray icon process exited unexpectedly - ${new Date().toISOString()}\n`);
-                    systray = null;
-                    trayReady = false;
-                    trayAvailable = false;
-                    trayRestarts += 1;
-                    if (trayRestarts <= MAX_TRAY_RESTARTS) {
-                        setTimeout(async () => {
-                            trayAvailable = await startTrayIcon();
-                        }, 3000 * trayRestarts);
-                    } else {
-                        appendLog("[TRAY] Tray icon keeps exiting - continuing without it. The helper is still running.\n");
-                    }
-                });
-            } catch {}
+            try { systray.onExit(() => process.exit(0)); } catch {}
         }
         return true;
     } catch (error) {
@@ -674,83 +688,86 @@ async function startTrayIcon() {
 
 // Written on every startup so (a) a second launch can tell a live copy is
 // already running instead of opening a duplicate tray icon + a second
-// server.js, and (b) the installer (see Installer\SpidxUploader.iss ->
+// server.js, and (b) the installer (see Installer\\SpidxUploader.iss ->
 // CurStepChanged(ssInstall)) can read this PID and close the running app
-// before it overwrites App\*.js — Node doesn't lock plain .js files the
-// way a loaded .exe/.dll would, so without this an update would silently
-// copy new files underneath a still-running old process, which then
-// keeps running on the OLD code (already in memory) until someone
-// happens to quit and reopen it by hand.
+// before it overwrites App\\*.js.
+//
+// IMPORTANT: a PID alone proves nothing. Windows reuses PIDs aggressively
+// (after a reboot or crash the number in this file very often belongs to a
+// completely unrelated process), and the old check "is that PID alive?" then
+// made every launch bail out with "already running" while no tray existed.
+// So a copy only counts as running if its PID is alive AND the file's
+// modification time is fresh: the running tray re-writes the file every few
+// seconds (heartbeat), and removes it again on a clean exit.
 const PID_FILE = path.join(APP_DIR, ".tray.pid");
+const HEARTBEAT_MS = 5000;
+const HEARTBEAT_STALE_MS = 30000;
 
 function isProcessAlive(pid) {
     if (!pid || Number.isNaN(pid)) return false;
     try {
         process.kill(pid, 0); // signal 0: existence/permission check only, doesn't actually signal anything
+        return true;
     } catch (error) {
-        if (error.code !== "EPERM") return false;
+        return error.code === "EPERM"; // exists, just not ours to signal — still alive
     }
-    // Windows reuses PIDs aggressively. A stale .tray.pid whose number now
-    // belongs to some unrelated process (chrome, svchost...) used to make
-    // every launch think "already running" and quit silently. Only count
-    // the PID as a live copy if it's actually a node process.
-    if (process.platform === "win32") {
-        try {
-            const { execFileSync } = require("child_process");
-            const out = execFileSync("tasklist", ["/FI", `PID eq ${pid}`, "/FO", "CSV", "/NH"],
-                { encoding: "utf8", windowsHide: true, timeout: 5000 });
-            return /node/i.test(out);
-        } catch { /* tasklist blocked - fall back to trusting the signal check */ }
-    }
-    return true;
 }
 
-function sleepSync(ms) {
-    try { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms); } catch {}
-}
-
-function removePidFile() {
-    try {
-        if (parseInt(fs.readFileSync(PID_FILE, "utf8").trim(), 10) === process.pid) fs.unlinkSync(PID_FILE);
-    } catch {}
-}
-process.on("exit", code => {
-    appendLog(`[TRAY] Tray process exiting (code ${code}) - ${new Date().toISOString()}\n`);
-    removePidFile();
-});
-
-// Returns true if another live instance already holds the PID file (so
-// the caller should bail out), otherwise claims it for this process.
-function checkSingleInstance() {
+// True if ANOTHER live tray owns the PID file right now.
+function otherInstanceRunning() {
     let existingPid = null;
+    let ageMs = Infinity;
     try {
         existingPid = parseInt(fs.readFileSync(PID_FILE, "utf8").trim(), 10);
-    } catch { /* no PID file yet - first run, or a stale/cleared one */ }
+        ageMs = Date.now() - fs.statSync(PID_FILE).mtimeMs;
+    } catch { /* no PID file yet — first run, or a cleared one */ }
 
-    // After "Log out" the old process spawns its replacement and exits a
-    // moment later - give it up to ~3s to disappear instead of treating
-    // it as a second copy.
-    for (let i = 0; existingPid && existingPid !== process.pid && i < 6 && isProcessAlive(existingPid); i++) {
-        sleepSync(500);
-    }
-    if (existingPid && existingPid !== process.pid && isProcessAlive(existingPid)) {
-        return true;
-    }
+    return !!(existingPid && existingPid !== process.pid && isProcessAlive(existingPid) && ageMs < HEARTBEAT_STALE_MS);
+}
 
+function writePidFile() {
     try {
         fs.writeFileSync(PID_FILE, String(process.pid), "utf8");
     } catch (error) {
         appendLog(`[TRAY] Could not write .tray.pid: ${error.message}\n`);
     }
+}
+
+function removeOwnPidFile() {
+    try {
+        if (parseInt(fs.readFileSync(PID_FILE, "utf8").trim(), 10) === process.pid) fs.unlinkSync(PID_FILE);
+    } catch {}
+}
+
+// Waits briefly for a previous copy to go away (e.g. the Dashboard's logout
+// relaunches the app and the old process is still exiting), then reports
+// whether another copy is genuinely still running.
+async function anotherCopyIsRunning() {
+    const deadline = Date.now() + 3000;
+    while (otherInstanceRunning()) {
+        if (Date.now() > deadline) return true;
+        await new Promise(resolve => setTimeout(resolve, 250));
+    }
     return false;
 }
 
+function claimSingleInstance() {
+    writePidFile();
+    setInterval(writePidFile, HEARTBEAT_MS); // heartbeat: keeps the mtime fresh while we run
+    process.on("exit", removeOwnPidFile);
+}
+
 async function main() {
-    if (checkSingleInstance()) {
+    if (await anotherCopyIsRunning()) {
         appendLog(`\n[TRAY] Another copy is already running — exiting this extra launch — ${new Date().toISOString()}\n`);
         showMessageBox("Spidx Uploader", "Spidx Uploader is already running — check your system tray.");
+        // The keep-alive interval at the top of this file would otherwise leave
+        // this extra process alive (invisible) forever. Give the message box a
+        // moment to spawn, then exit for real.
+        setTimeout(() => process.exit(0), 500);
         return;
     }
+    claimSingleInstance();
 
     appendLog(`\n[TRAY] Launcher started — ${new Date().toISOString()}\n`);
 
@@ -804,6 +821,13 @@ async function main() {
         } catch (error) {
             appendLog(`[TRAY] Update check failed: ${error.message}\n`);
         }
+        try {
+            const { checkPluginUpdates } = require("./plugin-updates.js");
+            pluginUpdateInfo = await checkPluginUpdates();
+            updateMenu();
+        } catch (error) {
+            appendLog(`[TRAY] Plugin update check failed: ${error.message}\n`);
+        }
     }
     refreshUpdateInfo();
     setInterval(refreshUpdateInfo, 6 * 60 * 60 * 1000); // re-check a few times a day; the module itself only actually calls GitHub once every 24h
@@ -816,7 +840,7 @@ async function main() {
     // destination/tier (like Drive still grayed out right after a tier
     // upgrade) until the next unrelated click. A cheap periodic refresh
     // avoids that.
-    setInterval(updateMenu, 4000);
+    if (trayAvailable) setInterval(updateMenu, 4000);
     setInterval(checkPendingLicenseCode, 4000);
     checkPendingLicenseCode(); // also catch a code dropped just before this process started
 

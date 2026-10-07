@@ -21,6 +21,7 @@
 const path = require("path");
 const fs = require("fs");
 const https = require("https");
+const http = require("http");
 const { spawn } = require("child_process");
 
 const APP_DIR = __dirname;
@@ -181,7 +182,8 @@ function openReleasePage(url, log = () => {}) {
 // totalBytes may be 0 if the server doesn't send Content-Length.
 function downloadFile(url, destPath, onProgress, redirectsLeft = 5) {
     return new Promise((resolve, reject) => {
-        const req = https.get(
+        const lib = /^http:/i.test(url) ? http : https;
+        const req = lib.get(
             url,
             { headers: { "User-Agent": "spidx-uploader-update-check" }, timeout: 30000 },
             res => {
@@ -238,4 +240,4 @@ async function downloadAndRunInstaller(info, onProgress) {
     return destPath;
 }
 
-module.exports = { checkForUpdate, openReleasePage, downloadAndRunInstaller, isNewerVersion };
+module.exports = { checkForUpdate, openReleasePage, downloadAndRunInstaller, isNewerVersion, downloadFile, REPO };

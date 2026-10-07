@@ -38,6 +38,8 @@ const PACKAGE_FILE = path.join(APP_DIR, "package.json");
 // files the setup wizard uses, just triggered from here too now.
 const CEP_EXTENSIONS_DIR = path.join(process.env.APPDATA || "", "Adobe", "CEP", "extensions");
 const upia = require("./upia.js");
+const diagnostics = require("./diagnostics.js");
+const pluginUpdates = require("./plugin-updates.js");
 const PLUGINS = {
     ae: {
         kind: "cep",
@@ -54,6 +56,17 @@ const PLUGINS = {
         installer: path.join(APP_DIR, "..", "CEP-PPRO", "Install PPRO Panel.bat"),
         uninstaller: path.join(APP_DIR, "..", "CEP-PPRO", "Uninstall PPRO Panel.bat"),
         bundledManifest: path.join(APP_DIR, "..", "CEP-PPRO", "CSXS", "manifest.xml")
+    },
+    // VEGAS Pro: a compiled .NET extension (.dll) built on the user's machine
+    // against their own VEGAS install by VEGAS-Plugin\install-vegas.js, which
+    // also records what it installed in vegas-install.json (read below).
+    vegas: {
+        kind: "vegas",
+        label: "VEGAS Pro plugin",
+        installer: path.join(APP_DIR, "..", "VEGAS-Plugin", "Install VEGAS Plugin.bat"),
+        uninstaller: path.join(APP_DIR, "..", "VEGAS-Plugin", "Uninstall VEGAS Plugin.bat"),
+        bundledVersionFile: path.join(APP_DIR, "..", "VEGAS-Plugin", "version.txt"),
+        recordFile: path.join(process.env.APPDATA || "", "Spidx Uploader", "vegas-install.json")
     },
     // UXP, not CEP: one packaged .ccx, installed/removed through Adobe's
     // UPIA tool instead of a .bat copying files into a CEP extensions
@@ -114,6 +127,22 @@ function readPluginStatus(key) {
             // successful install.
             checked: psInstallStatus.checked,
             installed: psInstallStatus.installed
+        };
+    }
+    if (p.kind === "vegas") {
+        let record = null;
+        try { record = JSON.parse(fs.readFileSync(p.recordFile, "utf8")); } catch {}
+        const stillThere = !!(record && Array.isArray(record.dlls) && record.dlls.some(f => fs.existsSync(f)));
+        let bundled = null;
+        try { bundled = fs.readFileSync(p.bundledVersionFile, "utf8").trim() || null; } catch {}
+        const installedVersion = stillThere ? (record.version || "unknown") : null;
+        return {
+            label: p.label,
+            kind: "vegas",
+            installed: stillThere,
+            installedVersion,
+            bundledVersion: bundled,
+            needsUpdate: !!(installedVersion && bundled && installedVersion !== bundled)
         };
     }
     const installedManifest = path.join(CEP_EXTENSIONS_DIR, p.extId, "CSXS", "manifest.xml");
@@ -287,7 +316,8 @@ function buildData() {
         engineSeen: !!status,
         statusUpdatedAt: (status && status.updatedAt) || null,
         appVersion: readAppVersion(),
-        plugins: { ae: readPluginStatus("ae"), ppro: readPluginStatus("ppro"), ps: readPluginStatus("ps") },
+        plugins: { ae: readPluginStatus("ae"), ppro: readPluginStatus("ppro"), vegas: readPluginStatus("vegas"), ps: readPluginStatus("ps") },
+        pluginUpdates: pluginUpdates.readCachedPluginUpdates(),
         destination,
         cameraRawPreset: cfg.cameraRawPreset && cfg.cameraRawPreset.actionName
             ? { actionSet: cfg.cameraRawPreset.actionSet || "", actionName: cfg.cameraRawPreset.actionName }
@@ -768,7 +798,7 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
 
         <div class="card" id="tourCardPlugins">
             <h2>Plugins</h2>
-            <p class="desc">Install, update or remove the After Effects / Premiere Pro panels. The host app must be closed first — a console window (with an admin prompt) does the actual copy.</p>
+            <p class="desc">Install, update or remove the After Effects / Premiere Pro panels and the VEGAS Pro plugin. The host app must be closed first — a console window (with an admin prompt) does the actual copy; for VEGAS it also builds the plugin for your VEGAS version.</p>
             <div class="field" id="pluginRowAe">
                 <label>After Effects panel — <span id="pluginStatusAe">—</span></label>
                 <div class="actions" style="margin-top:6px;">
@@ -783,12 +813,26 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
                     <button class="btn danger" id="uninstallPproBtn" disabled>Uninstall</button>
                 </div>
             </div>
+            <div class="field" id="pluginRowVegas">
+                <label>VEGAS Pro plugin — <span id="pluginStatusVegas">—</span></label>
+                <div class="actions" style="margin-top:6px;">
+                    <button class="btn" id="installVegasBtn">Install</button>
+                    <button class="btn danger" id="uninstallVegasBtn" disabled>Uninstall</button>
+                </div>
+            </div>
             <div class="field" id="pluginRowPs">
                 <label>Photoshop panel — <span id="pluginStatusPs">—</span></label>
                 <div class="actions" style="margin-top:6px;">
                     <button class="btn" id="installPsBtn">Install</button>
                     <button class="btn danger" id="uninstallPsBtn" disabled>Uninstall</button>
                     <button class="btn ghost" id="refreshPsStatusBtn">Refresh status</button>
+                </div>
+            </div>
+            <div class="field" id="pluginUpdatesRow">
+                <label>Plugin updates — <span id="pluginUpdatesStatus">—</span></label>
+                <div class="actions" style="margin-top:6px;">
+                    <button class="btn ghost" id="checkPluginUpdatesBtn">Check for plugin updates</button>
+                    <button class="btn" id="downloadPluginUpdatesBtn" style="display:none;">Download updates</button>
                 </div>
             </div>
             <div class="note" id="pluginNote"></div>
@@ -803,6 +847,17 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
                 <button class="btn ghost" id="restoreBtn">Restore from file</button>
                 <span class="note" id="backupNote" style="margin-top:0;"></span>
             </div>
+        </div>
+
+        <div class="card" id="tourCardDiagnostics">
+            <h2>Diagnostics</h2>
+            <p class="desc">Something not working? Run the self-test to see exactly what is wrong, or create a diagnostics file to send to support. Emails, user names in paths, tokens and secrets are removed from it.</p>
+            <div class="actions" style="margin-top: 0;">
+                <button class="btn" id="selfTestBtn">Run self-test</button>
+                <button class="btn ghost" id="makeDiagBtn">Create diagnostics file</button>
+                <span class="note" id="diagNote" style="margin-top:0;"></span>
+            </div>
+            <div id="selfTestResults" style="margin-top: 12px;"></div>
         </div>
 
         <div class="card">
@@ -1108,6 +1163,7 @@ function render() {
     var aeStatus = data.plugins && data.plugins.ae;
     var pproStatus = data.plugins && data.plugins.ppro;
     var psStatus = data.plugins && data.plugins.ps;
+    var vegasStatus = data.plugins && data.plugins.vegas;
     function pluginLabel(p) {
         if (!p) return "unknown";
         if (!p.installed) return "not installed";
@@ -1121,6 +1177,11 @@ function render() {
     }
     $("pluginStatusAe").textContent = pluginLabel(aeStatus);
     $("pluginStatusPpro").textContent = pluginLabel(pproStatus);
+    $("pluginStatusVegas").textContent = pluginLabel(vegasStatus);
+    renderPluginUpdates(data.pluginUpdates);
+    $("uninstallVegasBtn").disabled = !(vegasStatus && vegasStatus.installed);
+    $("installVegasBtn").disabled = false;
+    $("installVegasBtn").textContent = installLabel(vegasStatus);
     $("uninstallAeBtn").disabled = !(aeStatus && aeStatus.installed);
     $("uninstallPproBtn").disabled = !(pproStatus && pproStatus.installed);
     $("installAeBtn").disabled = false;
@@ -1363,6 +1424,7 @@ function uninstallPlugin(key, btnId) {
 }
 $("uninstallAeBtn").addEventListener("click", uninstallPlugin("ae"));
 $("uninstallPproBtn").addEventListener("click", uninstallPlugin("ppro"));
+$("uninstallVegasBtn").addEventListener("click", uninstallPlugin("vegas"));
 $("uninstallPsBtn").addEventListener("click", uninstallPlugin("ps"));
 
 function installPlugin(key) {
@@ -1385,6 +1447,7 @@ function installPlugin(key) {
 }
 $("installAeBtn").addEventListener("click", installPlugin("ae"));
 $("installPproBtn").addEventListener("click", installPlugin("ppro"));
+$("installVegasBtn").addEventListener("click", installPlugin("vegas"));
 $("installPsBtn").addEventListener("click", installPlugin("ps"));
 $("refreshPsStatusBtn").addEventListener("click", async function () {
     setNote("pluginNote", "Checking...");
@@ -1419,6 +1482,124 @@ $("restoreFile").addEventListener("change", async function () {
     } catch (e) {
         setNote("backupNote", "That file isn't valid JSON.", "err");
     }
+});
+
+
+/* ---------------- plugin updates ---------------- */
+function renderPluginUpdates(info) {
+    var label = $("pluginUpdatesStatus");
+    var dl = $("downloadPluginUpdatesBtn");
+    if (!info) { label.textContent = "unknown"; dl.style.display = "none"; return; }
+    if (info.updates && info.updates.length) {
+        label.textContent = "available: " + info.updates.map(function (u) { return u.label + " (" + u.remoteVersion + ")"; }).join(", ");
+        dl.style.display = "";
+    } else {
+        label.textContent = info.error ? "couldn't check (" + info.error + ")" : "up to date";
+        dl.style.display = "none";
+    }
+}
+
+$("checkPluginUpdatesBtn").addEventListener("click", async function () {
+    var btn = this;
+    btn.disabled = true;
+    setNote("pluginNote", "Checking GitHub...");
+    try {
+        var res = await fetch("/plugin-updates?force=1");
+        var info = await res.json();
+        renderPluginUpdates(info);
+        setNote("pluginNote", info.error ? "Could not check: " + info.error : (info.updates.length ? "Plugin updates found." : "All plugins are up to date."), info.error ? "err" : "ok");
+    } catch (e) {
+        setNote("pluginNote", "Could not reach the dashboard server.", "err");
+    }
+    btn.disabled = false;
+});
+
+$("downloadPluginUpdatesBtn").addEventListener("click", async function () {
+    var btn = this;
+    btn.disabled = true;
+    setNote("pluginNote", "Downloading plugin updates...");
+    try {
+        var res = await fetch("/download-plugin-updates", { method: "POST" });
+        var out = await res.json();
+        var failed = (out.results || []).filter(function (r) { return !r.ok; });
+        if (failed.length) {
+            setNote("pluginNote", "Some updates failed: " + failed.map(function (r) { return r.label + " - " + r.message; }).join("; "), "err");
+        } else if (!(out.results || []).length) {
+            setNote("pluginNote", out.message || "Nothing to download.", out.ok ? "ok" : "err");
+        } else {
+            setNote("pluginNote", "Downloaded. Now close the host app and click Update next to each plugin above to put the new version in place.", "ok");
+        }
+        refresh();
+    } catch (e) {
+        setNote("pluginNote", "Could not reach the dashboard server.", "err");
+    }
+    btn.disabled = false;
+});
+
+/* ---------------- diagnostics ---------------- */
+var STATUS_COLORS = { ok: "var(--ok)", warn: "#ffb020", fail: "var(--err)", info: "var(--text-dim)" };
+var STATUS_WORDS = { ok: "OK", warn: "WARN", fail: "FAIL", info: "info" };
+
+function renderSelfTest(result) {
+    var box = $("selfTestResults");
+    box.textContent = "";
+    var head = document.createElement("div");
+    head.style.cssText = "font-size:12.5px;font-weight:600;margin-bottom:8px;";
+    head.textContent = result.summary.ok + " ok, " + result.summary.warn + " warning(s), " + result.summary.fail + " failed";
+    box.appendChild(head);
+    result.checks.forEach(function (c) {
+        var row = document.createElement("div");
+        row.style.cssText = "display:flex;gap:10px;align-items:baseline;padding:6px 10px;border:1px solid var(--line);border-radius:8px;margin-bottom:5px;font-size:12px;";
+        var tag = document.createElement("span");
+        tag.style.cssText = "flex-shrink:0;width:42px;font-weight:700;color:" + (STATUS_COLORS[c.status] || "inherit") + ";";
+        tag.textContent = STATUS_WORDS[c.status] || c.status;
+        var txt = document.createElement("span");
+        txt.style.cssText = "min-width:0;word-break:break-word;";
+        var strong = document.createElement("b");
+        strong.textContent = c.label;
+        txt.appendChild(strong);
+        if (c.detail) txt.appendChild(document.createTextNode(" - " + c.detail));
+        row.appendChild(tag);
+        row.appendChild(txt);
+        box.appendChild(row);
+    });
+}
+
+$("selfTestBtn").addEventListener("click", async function () {
+    var btn = this;
+    btn.disabled = true;
+    setNote("diagNote", "Running checks...");
+    try {
+        var res = await fetch("/self-test");
+        renderSelfTest(await res.json());
+        setNote("diagNote", "");
+    } catch (e) {
+        setNote("diagNote", "Could not run the self-test.", "err");
+    }
+    btn.disabled = false;
+});
+
+$("makeDiagBtn").addEventListener("click", async function () {
+    var btn = this;
+    btn.disabled = true;
+    setNote("diagNote", "Collecting files...");
+    try {
+        var res = await fetch("/make-diagnostics", { method: "POST" });
+        var out = await res.json();
+        if (!out.ok) {
+            setNote("diagNote", out.message || "Could not create the file.", "err");
+        } else {
+            setNote("diagNote", "Created: " + out.path + " - the folder is opening. Send that .zip to support.", "ok");
+            fetch("/open-diagnostics-folder", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ path: out.path })
+            });
+        }
+    } catch (e) {
+        setNote("diagNote", "Could not reach the dashboard server.", "err");
+    }
+    btn.disabled = false;
 });
 
 // TODO: point this at your real Discord/support URL.
@@ -1750,7 +1931,7 @@ $("saveSettingsBtn").addEventListener("click", async function () {
 var TOUR_STEPS = [
     { page: "overview", anchor: "tourCardDest", text: "Switch between WorkUpload and Google Drive here — it takes effect immediately, no restart needed." },
     { page: "overview", anchor: "tourCardPreset", text: "Set a Photoshop Action to run automatically on every file right before it uploads (Pro tiers)." },
-    { page: "account", anchor: "tourCardPlugins", text: "Install or update your Photoshop, After Effects, and Premiere Pro panels from here." },
+    { page: "account", anchor: "tourCardPlugins", text: "Install or update your Photoshop, After Effects, Premiere Pro panels and the VEGAS Pro plugin from here." },
     { page: "settings", anchor: "tourCardSettings", text: "Auto-cleanup, retry behavior, and other advanced options live here." }
 ];
 var tourStarted = false;
@@ -1922,6 +2103,68 @@ function openDashboard(log = console.log, controls = {}) {
         if (url.pathname === "/data" && req.method === "GET") {
             res.writeHead(200, { "Content-Type": "application/json" });
             res.end(JSON.stringify(buildData()));
+            return;
+        }
+
+        if (url.pathname === "/self-test" && req.method === "GET") {
+            diagnostics.runSelfTest().then(result => {
+                res.writeHead(200, { "Content-Type": "application/json" });
+                res.end(JSON.stringify(result));
+            }).catch(err => {
+                res.writeHead(500, { "Content-Type": "application/json" });
+                res.end(JSON.stringify({ ok: false, message: err.message }));
+            });
+            return;
+        }
+
+        if (url.pathname === "/make-diagnostics" && req.method === "POST") {
+            diagnostics.buildDiagnostics(log).then(result => {
+                res.writeHead(200, { "Content-Type": "application/json" });
+                res.end(JSON.stringify(result));
+            });
+            return;
+        }
+
+        if (url.pathname === "/open-diagnostics-folder" && req.method === "POST") {
+            let body = "";
+            req.on("data", chunk => { body += chunk; });
+            req.on("end", () => {
+                let opened = false;
+                try {
+                    const parsed = JSON.parse(body || "{}");
+                    const target = path.resolve(String(parsed.path || ""));
+                    // only ever reveal files inside the diagnostics folder
+                    if (target.startsWith(path.resolve(diagnostics.DIAG_DIR) + path.sep) && fs.existsSync(target)) {
+                        const child = spawn("explorer.exe", ["/select," + target], { detached: true, windowsHide: false });
+                        child.on("error", err => log(`Could not open the diagnostics folder: ${err.message}`));
+                        child.unref();
+                        opened = true;
+                    }
+                } catch (err) {
+                    log(`Could not open the diagnostics folder: ${err.message}`);
+                }
+                res.writeHead(200, { "Content-Type": "application/json" });
+                res.end(JSON.stringify({ ok: opened }));
+            });
+            return;
+        }
+
+        if (url.pathname === "/plugin-updates" && req.method === "GET") {
+            pluginUpdates.checkPluginUpdates(url.searchParams.get("force") === "1").then(info => {
+                res.writeHead(200, { "Content-Type": "application/json" });
+                res.end(JSON.stringify(info));
+            });
+            return;
+        }
+
+        if (url.pathname === "/download-plugin-updates" && req.method === "POST") {
+            pluginUpdates.downloadPluginUpdates(null, log).then(out => {
+                res.writeHead(200, { "Content-Type": "application/json" });
+                res.end(JSON.stringify(out));
+            }).catch(err => {
+                res.writeHead(200, { "Content-Type": "application/json" });
+                res.end(JSON.stringify({ ok: false, results: [], message: err.message }));
+            });
             return;
         }
 

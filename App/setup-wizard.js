@@ -29,6 +29,9 @@ const LICENSE_CACHE_FILE = path.join(APP_DIR, "license-cache.json");
 // The After Effects panel ships next to the App folder, not inside it.
 const AE_INSTALLER = path.join(APP_DIR, "..", "CEP-AE", "Install AE Panel.bat");
 const PPRO_INSTALLER = path.join(APP_DIR, "..", "CEP-PPRO", "Install PPRO Panel.bat");
+// VEGAS Pro plugin: builds a .dll against the user's VEGAS and copies it into
+// its "Application Extensions" folder -- see VEGAS-Plugin\install-vegas.js.
+const VEGAS_INSTALLER = path.join(APP_DIR, "..", "VEGAS-Plugin", "Install VEGAS Plugin.bat");
 // Photoshop (UXP) panel: a single packaged .ccx installed through Adobe's
 // UPIA tool -- see upia.js. Filename/id must match Installer\SpidxUploader.iss.
 const PS_INSTALLER_CCX = path.join(APP_DIR, "..", "UXP", "com.spidx.workupload_PS.ccx");
@@ -289,7 +292,7 @@ const WIZARD_HTML = `<!DOCTYPE html>
     .host-row .ico.ps { background: rgba(100,210,255,.12); color: #48b6ff; }
     .host-row .ico.ae { background: rgba(192,123,255,.14); color: #c07bff; }
     .host-row .ico.ppro { background: rgba(150,110,255,.14); color: #9a7bff; }
-    .host-row .ico.vegas { background: rgba(255,255,255,.06); color: var(--faint); }
+    .host-row .ico.vegas { background: rgba(63,180,255,.14); color: #3fb4ff; }
     .host-row.locked { opacity: .55; }
     .host-row.locked .txt b { color: var(--dim); }
     .badge-default {
@@ -436,12 +439,12 @@ const WIZARD_HTML = `<!DOCTYPE html>
             </div>
         </div>
 
-        <div class="host-row locked">
+        <div class="host-row">
             <div class="ico vegas">Vg</div>
             <div class="txt">
-                <b>Vegas Pro <span class="badge-soon">SOON</span></b>
-                <span>Not installable from here yet — for now it's a script you drop into VEGAS's own Script Menu folder by hand. See VEGAS-Plugin\README.txt.</span>
-                <button class="mini" disabled>Coming soon</button>
+                <b>VEGAS Pro <span style="color: var(--faint); font-weight: 500;">(optional)</span></b>
+                <span>Builds and installs a docked panel that saves the current frame as a PNG (View &gt; Extensions &gt; Spidx Uploader). VEGAS must be closed while it installs.</span>
+                <button class="mini" id="installVegasBtn">Install the VEGAS Pro plugin</button>
             </div>
         </div>
 
@@ -543,6 +546,7 @@ async function loadState() {
             $("installPsBtn").textContent = "Install the Photoshop panel";
         }
         applyPproButtonState();
+        applyVegasButtonState();
         if (data.email) renderAccount();
     } catch (err) {}
 }
@@ -563,6 +567,7 @@ $("signinBtn").addEventListener("click", async function () {
             state.proFeaturesAllowed = data.proFeaturesAllowed;
             renderAccount();
             applyPproButtonState();
+        applyVegasButtonState();
             setStatus("signinStatus", data.tierChecked
                 ? "Signed in."
                 : "Signed in — the tier check could not reach the server, so you start on Free.", "ok");
@@ -601,6 +606,7 @@ $("wizLicenseBtn").addEventListener("click", async function () {
             state.proFeaturesAllowed = data.proFeaturesAllowed;
             renderAccount();
             applyPproButtonState();
+        applyVegasButtonState();
             var label = data.tier.toUpperCase() + (data.trialDaysRemaining ? " (" + data.trialDaysRemaining + (data.trialDaysRemaining === 1 ? " day" : " days") + " left)" : " (lifetime)");
             setStatus("wizLicenseStatus", "Activated - you now have " + label + (data.driveAllowed ? ". Google Drive is unlocked." : "."), "ok");
             setStatus("signinStatus", "");
@@ -684,6 +690,35 @@ $("installAeBtn").addEventListener("click", async function () {
     setStatus("hostsStatus", "Starting the After Effects panel installer — follow the window it opens.");
     try {
         var res = await fetch("/install-ae-panel", { method: "POST" });
+        var data = await res.json();
+        if (!data.ok) {
+            setStatus("hostsStatus", data.message || "Could not start the installer.", "err");
+            btn.disabled = false;
+        } else {
+            btn.textContent = "Installer opened";
+        }
+    } catch (err) {
+        setStatus("hostsStatus", "Could not start the installer.", "err");
+        btn.disabled = false;
+    }
+});
+
+function applyVegasButtonState() {
+    if (!state.vegasPanelAvailable) {
+        $("installVegasBtn").disabled = true;
+        $("installVegasBtn").textContent = "VEGAS plugin folder not found (VEGAS-Plugin)";
+    } else {
+        $("installVegasBtn").disabled = false;
+        $("installVegasBtn").textContent = "Install the VEGAS Pro plugin";
+    }
+}
+
+$("installVegasBtn").addEventListener("click", async function () {
+    var btn = $("installVegasBtn");
+    btn.disabled = true;
+    setStatus("hostsStatus", "Starting the VEGAS Pro plugin installer — follow the window it opens.");
+    try {
+        var res = await fetch("/install-vegas-panel", { method: "POST" });
         var data = await res.json();
         if (!data.ok) {
             setStatus("hostsStatus", data.message || "Could not start the installer.", "err");
@@ -793,6 +828,7 @@ function runSetupWizard(log = console.log) {
                     incomingPath: INCOMING_DIR,
                     aePanelAvailable: fs.existsSync(AE_INSTALLER),
                     pproPanelAvailable: fs.existsSync(PPRO_INSTALLER),
+                    vegasPanelAvailable: fs.existsSync(VEGAS_INSTALLER),
                     psPanelAvailable: fs.existsSync(PS_INSTALLER_CCX),
                     upiaAvailable: !!upia.getUpiaPath()
                 }));
@@ -939,6 +975,21 @@ function runSetupWizard(log = console.log) {
                     if (!fs.existsSync(PPRO_INSTALLER)) throw new Error("CEP-PPRO\\Install PPRO Panel.bat was not found next to the App folder.");
                     log(`Setup wizard: launching Premiere Pro panel installer at "${PPRO_INSTALLER}".`);
                     spawnBatFile(PPRO_INSTALLER, log, (ok, message) => {
+                        res.writeHead(200, { "Content-Type": "application/json" });
+                        res.end(JSON.stringify(ok ? { ok: true } : { ok: false, message: "Windows refused to start it: " + message }));
+                    });
+                } catch (err) {
+                    res.writeHead(200, { "Content-Type": "application/json" });
+                    res.end(JSON.stringify({ ok: false, message: err.message }));
+                }
+                return;
+            }
+
+            if (url.pathname === "/install-vegas-panel" && req.method === "POST") {
+                try {
+                    if (!fs.existsSync(VEGAS_INSTALLER)) throw new Error("VEGAS-Plugin\\Install VEGAS Plugin.bat was not found next to the App folder.");
+                    log(`Setup wizard: launching VEGAS Pro plugin installer at "${VEGAS_INSTALLER}".`);
+                    spawnBatFile(VEGAS_INSTALLER, log, (ok, message) => {
                         res.writeHead(200, { "Content-Type": "application/json" });
                         res.end(JSON.stringify(ok ? { ok: true } : { ok: false, message: "Windows refused to start it: " + message }));
                     });

@@ -60,6 +60,7 @@ xcopy "%SRC%client" "%DEST%\client\" /e /i /y >nul
 xcopy "%SRC%host" "%DEST%\host\" /e /i /y >nul
 xcopy "%SRC%icons" "%DEST%\icons\" /e /i /y >nul
 xcopy "%SRC%presets" "%DEST%\presets\" /e /i /y >nul
+if exist "%SRC%mogrts" xcopy "%SRC%mogrts" "%DEST%\mogrts\" /e /i /y >nul
 
 if not exist "%DEST%\CSXS\manifest.xml" (
     echo.

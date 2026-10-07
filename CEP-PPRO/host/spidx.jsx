@@ -82,6 +82,21 @@ function spidxResolveFolder(raw) {
     throw new Error("The incoming folder could not be found from Premiere Pro. Tried: " + candidates.join(" | "));
 }
 
+// Sorts Folder objects named like version numbers ("9.0", "14.0", "25.0")
+// newest-first. Plain string comparison is wrong here: "9.0" > "25.0".
+function spidxSortVersionFoldersDesc(folders) {
+    function num(name) {
+        var n = parseFloat(String(name).replace(/[^0-9.]/g, ""));
+        return isNaN(n) ? -1 : n;
+    }
+    folders.sort(function (a, b) {
+        var x = num(a.name), y = num(b.name);
+        if (x !== y) return y - x;
+        return b.name > a.name ? 1 : (b.name < a.name ? -1 : 0);
+    });
+    return folders;
+}
+
 function spidxStamp() {
     return "spidx_" + (new Date()).getTime();
 }
@@ -103,7 +118,7 @@ function spidxPresetPath() {
     var root = new Folder("~/AppData/Roaming/Adobe/Adobe Media Encoder");
     if (root.exists) {
         var versionFolders = root.getFiles(function (f) { return f instanceof Folder; });
-        versionFolders.sort(function (a, b) { return b.name > a.name ? 1 : (b.name < a.name ? -1 : 0); });
+        spidxSortVersionFoldersDesc(versionFolders);
         for (var i = 0; i < versionFolders.length; i++) {
             var candidate = new File(versionFolders[i].fsName + "/Presets/pngframe.epr");
             if (candidate.exists) return candidate;
@@ -111,6 +126,191 @@ function spidxPresetPath() {
     }
 
     return bundled; // still missing everywhere — caller reports exactly this path as "not found"
+}
+
+/* ---------------------------------------------------------------------- *
+ *  Motion Graphics Templates — the panel's "MOGRT" tab
+ * ---------------------------------------------------------------------- */
+
+// Reads mogrts/mogrts.json, bundled next to this panel (same
+// $.fileName-relative trick spidxPresetPath() above uses for presets/).
+// Passed straight through as raw JSON text rather than parsed - it's a
+// hand-edited file shipped with the panel, and ExtendScript has no
+// reliable JSON object. Because it's hand-edited, a stray BOM or a
+// missing bracket would otherwise surface as the unreadable "Unexpected
+// response from Premiere Pro", so the shape is sanity-checked here.
+function spidxListMogrts() {
+    try {
+        var thisFile = new File($.fileName);
+        var jsonFile = new File(thisFile.parent.parent.fsName + "/mogrts/mogrts.json");
+        if (!jsonFile.exists) return '{"ok":true,"items":[]}';
+
+        jsonFile.open("r");
+        jsonFile.encoding = "UTF-8";
+        var text = jsonFile.read();
+        jsonFile.close();
+
+        text = String(text).replace(/^\uFEFF/, "").replace(/^\s+|\s+$/g, "");
+        if (text === "") return '{"ok":true,"items":[]}';
+        if (text.charAt(0) !== "[" || text.charAt(text.length - 1) !== "]") {
+            return spidxFail("mogrts/mogrts.json must be a JSON list: [ { \"file\": \"...\", \"name\": \"...\" }, ... ]");
+        }
+
+        return '{"ok":true,"items":' + text + '}';
+    } catch (err) {
+        return spidxFail(err.toString());
+    }
+}
+
+// Premiere's own "Local Templates Folder" - the one Essential Graphics >
+// Browse reads. It is per-USER and shared across Premiere versions:
+//     Windows: %APPDATA%\Adobe\Common\Motion Graphics Templates
+//     macOS:   ~/Library/Application Support/Adobe/Common/Motion Graphics Templates
+// (NOT under Documents\Adobe\Premiere Pro\<version>\ - a file copied there
+// is never listed.) ExtendScript's Folder.userData is exactly %APPDATA% /
+// Application Support, so this works on both platforms.
+function spidxMotionGraphicsTemplatesFolder() {
+    var base = Folder.userData;
+    if (!base || !base.exists) return null;
+
+    var steps = ["Adobe", "Common", "Motion Graphics Templates"];
+    var path = base.fsName;
+    for (var i = 0; i < steps.length; i++) {
+        path += "/" + steps[i];
+        var folder = new Folder(path);
+        if (!folder.exists && !folder.create()) return null;
+    }
+    return new Folder(path);
+}
+
+// A file name coming from the panel must be a plain "something.mogrt" -
+// never a path.
+function spidxSafeMogrtName(fileName) {
+    var name = String(fileName || "");
+    if (!name || name.indexOf("/") !== -1 || name.indexOf("\\") !== -1 || name.indexOf("..") !== -1) return null;
+    if (!/\.mogrt$/i.test(name)) return null;
+    return name;
+}
+
+function spidxBundledMogrt(fileName) {
+    var thisFile = new File($.fileName);
+    return new File(thisFile.parent.parent.fsName + "/mogrts/" + fileName);
+}
+
+// Copies a .mogrt bundled in mogrts/ into Premiere's Local Templates
+// Folder, so it shows up in Essential Graphics > Browse > Local templates
+// without anyone touching the filesystem by hand. If the same file is
+// already there it is left alone; if the bundled one is a different build
+// (different size) it replaces the old copy, so panel updates reach it.
+function spidxInstallMogrt(fileName) {
+    try {
+        var name = spidxSafeMogrtName(fileName);
+        if (!name) return spidxFail("Invalid template name: " + fileName);
+
+        var source = spidxBundledMogrt(name);
+        if (!source.exists) return spidxFail("Bundled file not found: " + name);
+
+        var destFolder = spidxMotionGraphicsTemplatesFolder();
+        if (!destFolder) return spidxFail("Could not find or create Premiere's Motion Graphics Templates folder (" + Folder.userData.fsName + "/Adobe/Common/Motion Graphics Templates) - check the folder isn't read-only.");
+
+        var dest = new File(destFolder.fsName + "/" + name);
+        var updated = false;
+        if (dest.exists) {
+            if (dest.length === source.length) return '{"ok":true,"alreadyInstalled":true}';
+            if (!dest.remove()) return spidxFail("The installed copy of " + name + " is outdated but locked - close Premiere Pro and try again.");
+            updated = true;
+        }
+
+        if (!source.copy(dest.fsName)) return spidxFail("Could not copy the file - check Premiere isn't locking the destination folder.");
+
+        return '{"ok":true,"alreadyInstalled":false,"updated":' + (updated ? "true" : "false") + '}';
+    } catch (err) {
+        return spidxFail(err.toString());
+    }
+}
+
+// Picks the video track a new graphic should land on. importMGT() OVERWRITES
+// whatever is on the target track at that time, so this never uses V1 (your
+// footage) and never a track that already has a clip in the next few
+// seconds - it returns the first free track above V1, or -1.
+var SPIDX_MOGRT_CLEARANCE_SECONDS = 6;
+
+function spidxFreeVideoTrackIndex(seq, startSeconds) {
+    var tracks = seq.videoTracks;
+    var endSeconds = startSeconds + SPIDX_MOGRT_CLEARANCE_SECONDS;
+
+    for (var t = 1; t < tracks.numTracks; t++) {
+        var track = tracks[t];
+        var free = true;
+        try {
+            if (track.isLocked && track.isLocked()) free = false;
+        } catch (e) {}
+
+        if (free) {
+            for (var c = 0; c < track.clips.numItems; c++) {
+                var clip = track.clips[c];
+                var clipStart = Number(clip.start.seconds);
+                var clipEnd = Number(clip.end.seconds);
+                if (clipStart < endSeconds && clipEnd > startSeconds) { free = false; break; }
+            }
+        }
+        if (free) return t;
+    }
+    return -1;
+}
+
+// Inserts a bundled .mogrt straight onto the timeline at the playhead
+// (no install step needed), then - if a nick is given and the user's tier
+// allows it - writes it into the graphic's text property, like the
+// Properties tab does for an existing clip.
+function spidxInsertMogrt(fileName, nick, allowText) {
+    try {
+        var seq = spidxActiveSequence();
+        if (!seq) return spidxFail("No sequence is active - open a sequence in the Timeline panel, then try again.");
+
+        var name = spidxSafeMogrtName(fileName);
+        if (!name) return spidxFail("Invalid template name: " + fileName);
+        var source = spidxBundledMogrt(name);
+        if (!source.exists) return spidxFail("Bundled file not found: " + name);
+
+        var pos = seq.getPlayerPosition();
+        var trackIndex = spidxFreeVideoTrackIndex(seq, Number(pos.seconds));
+        if (trackIndex < 0) {
+            return spidxFail("No free video track above V1 at the playhead - add an empty video track (right-click a track header > Add Track) or move the playhead, then try again. (Spidx never inserts onto V1 or over existing clips.)");
+        }
+
+        var item = seq.importMGT(source.fsName, pos.ticks, trackIndex, 0);
+        if (!item) return spidxFail("Premiere Pro could not insert the template - it may need a newer Premiere version.");
+
+        try { item.setSelected(true, true); } catch (e) {}
+
+        var textApplied = false;
+        var textNote = "";
+        var wantText = String(nick || "").length > 0;
+        if (wantText) {
+            if (String(allowText) !== "true") {
+                textNote = "Nick fill is a Pro feature.";
+            } else {
+                try {
+                    var component = item.getMGTComponent();
+                    var param = component ? spidxPickTextParam(component) : null;
+                    if (param) {
+                        spidxWriteParamText(param, String(nick));
+                        textApplied = true;
+                    } else {
+                        textNote = "This template has no text property Spidx can fill.";
+                    }
+                } catch (e) {
+                    textNote = "Inserted, but the nick could not be written: " + e.toString();
+                }
+            }
+        }
+
+        return '{"ok":true,"track":"V' + (trackIndex + 1) + '","textApplied":' + (textApplied ? "true" : "false")
+            + ',"note":"' + spidxEscape(textNote) + '"}';
+    } catch (err) {
+        return spidxFail(err.toString());
+    }
 }
 
 /* ---------------------------------------------------------------------- *
@@ -345,19 +545,83 @@ function spidxSelectedGraphicsClip() {
 // a {"textEditValue":...} JSON blob is definitely text, and anything
 // else non-numeric is treated as a plain-string text field (the
 // pre-14.1 Premiere shape).
+// NOTE: no JSON.parse here on purpose - ExtendScript has no JSON object
+// in many versions, and a ReferenceError inside this check made every
+// text property look "not text" (so the Properties tab found nothing).
+function spidxIsTextEditJson(rawValue) {
+    var trimmed = String(rawValue).replace(/^\s+|\s+$/g, "");
+    return trimmed.charAt(0) === "{" && /"textEditValue"\s*:/.test(trimmed);
+}
+
 function spidxParamLooksLikeText(rawValue) {
     if (rawValue == null) return false;
     var trimmed = String(rawValue).replace(/^\s+|\s+$/g, "");
     if (trimmed === "") return false;
     if (trimmed === "true" || trimmed === "false") return false;
     if (!isNaN(Number(trimmed))) return false;
-    if (trimmed.charAt(0) === "{") {
-        try {
-            var parsed = JSON.parse(trimmed);
-            return !!(parsed && typeof parsed === "object" && ("textEditValue" in parsed));
-        } catch (e) { return false; }
-    }
+    if (trimmed.charAt(0) === "{") return spidxIsTextEditJson(trimmed);
     return true;
+}
+
+// Escapes text for use inside a JSON string literal.
+function spidxJsonQuote(text) {
+    var s = String(text);
+    var out = '"';
+    for (var i = 0; i < s.length; i++) {
+        var c = s.charAt(i);
+        var code = s.charCodeAt(i);
+        if (c === '"') out += '\\"';
+        else if (c === "\\") out += "\\\\";
+        else if (c === "\n") out += "\\n";
+        else if (c === "\r") out += "\\r";
+        else if (c === "\t") out += "\\t";
+        else if (code < 32) out += "\\u" + ("0000" + code.toString(16)).slice(-4);
+        else out += c;
+    }
+    return out + '"';
+}
+
+// Rewrites "textEditValue" and "fontTextRunLength" inside the JSON blob
+// by text replacement (no JSON.parse/stringify - see above). The
+// function-style replacement keeps "$" characters in the nick literal.
+function spidxReplaceTextEditJson(rawJson, text) {
+    var out = String(rawJson).replace(/("textEditValue"\s*:\s*)"(?:[^"\\]|\\[\s\S])*"/, function (m, head) {
+        return head + spidxJsonQuote(text);
+    });
+    out = out.replace(/("fontTextRunLength"\s*:\s*)\[[^\]]*\]/, function (m, head) {
+        return head + "[" + String(text).length + "]";
+    });
+    return out;
+}
+
+// Writes text into one Essential Graphics text parameter, handling both
+// shapes getValue() comes back in (plain string vs. the JSON blob).
+function spidxWriteParamText(param, text) {
+    var raw = null;
+    try { raw = param.getValue(); } catch (e) { raw = null; }
+
+    if (raw != null && spidxIsTextEditJson(raw)) {
+        param.setValue(spidxReplaceTextEditJson(raw, text), true);
+    } else {
+        param.setValue(String(text), true);
+    }
+}
+
+// Which text parameter of a freshly inserted graphic should receive the
+// nick: prefer one that is named like it (nick / name / player), else the
+// first text-like one.
+function spidxPickTextParam(component) {
+    var props = component.properties;
+    var first = null;
+    for (var i = 0; i < props.numItems; i++) {
+        var param = props[i];
+        var raw = null;
+        try { raw = param.getValue(); } catch (e) { raw = null; }
+        if (!spidxParamLooksLikeText(raw)) continue;
+        if (!first) first = param;
+        if (/nick|name|player|gamertag/i.test(String(param.displayName))) return param;
+    }
+    return first;
 }
 
 // Returns the selected clip's text-like Essential Graphics properties,
@@ -398,22 +662,7 @@ function spidxSetGraphicText(displayName, text) {
         var param = found.component.properties.getParamForDisplayName(String(displayName));
         if (!param) return spidxFail("Property \"" + displayName + "\" was not found on the selected clip — the selection may have changed. Click Refresh.");
 
-        var raw = null;
-        try { raw = param.getValue(); } catch (e) { raw = null; }
-
-        if (raw != null && String(raw).charAt(0) === "{") {
-            try {
-                var parsed = JSON.parse(raw);
-                if (parsed && typeof parsed === "object" && ("textEditValue" in parsed)) {
-                    parsed.textEditValue = text;
-                    parsed.fontTextRunLength = [String(text).length];
-                    param.setValue(JSON.stringify(parsed), true);
-                    return '{"ok":true}';
-                }
-            } catch (e) { /* not JSON after all — fall through to the plain-string branch */ }
-        }
-
-        param.setValue(text, true);
+        spidxWriteParamText(param, text);
         return '{"ok":true}';
     } catch (err) {
         return spidxFail(err.toString());

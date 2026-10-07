@@ -83,3 +83,17 @@ presets/                 Optional — a copy of pngframe.epr here still works, b
 icons/                   Reused from the AE panel
 Install PPRO Panel.bat   Installer (PlayerDebugMode + copy to CEP extensions)
 PRESET-SETUP.txt         One-time PNG preset setup, read this first
+
+------------------------------------------------------------------------
+MOGRT tab (v1.1.0)
+------------------------------------------------------------------------
+Templates bundled in mogrts/ (listed by mogrts/mogrts.json):
+  - "Insert at playhead": puts the graphic on the timeline at the playhead,
+    on the first FREE video track above V1 (it never touches V1 or overwrites
+    an existing clip - add an empty track if it says none is free). If a nick
+    is typed / picked on the Leaderboard tab, it is written into the graphic's
+    text (Pro feature, same as the Properties tab).
+  - "Install": copies the .mogrt into Premiere's Local Templates Folder
+    (%APPDATA%\Adobe\Common\Motion Graphics Templates) so it shows up in
+    Essential Graphics > Browse. Uninstalling the panel does not remove them.
+

@@ -71,6 +71,9 @@
         background: var(--surface); border: 1px solid var(--line); border-radius: 11px;
         padding: 12px; text-align: center; transition: border-color .25s ease;
     }
+    #mogrtsList .card { margin-bottom: 10px; text-align: left; }
+    #mogrtsList .btn-row { margin-top: 10px; }
+    #mogrtsList .btn { margin-top: 0; }
     .card.ok { border-color: var(--ok); }
     .card.error { border-color: var(--err); }
     .card.pulse { animation: pulse .3s ease; }
@@ -243,6 +246,7 @@
         <button class="tab-btn active" id="tabBtnUploader" data-tab="tabUploader">Uploader</button>
         <button class="tab-btn" id="tabBtnLeaderboard" data-tab="tabLeaderboard">Leaderboard</button>
         <button class="tab-btn" id="tabBtnProps" data-tab="tabProps">Properties</button>
+        <button class="tab-btn" id="tabBtnMogrt" data-tab="tabMogrt">MOGRT</button>
     </div>
 
     <div class="tab-page active" id="tabUploader">
@@ -338,6 +342,16 @@
 
         <button class="btn" id="propsApply" disabled>Apply</button>
         <div class="card-sub" id="propsMessage"></div>
+    </div>
+
+    <div class="tab-page" id="tabMogrt">
+        <div class="card-sub" id="mogrtsStatus">Loading...</div>
+
+        <div class="label">Nick for new graphics</div>
+        <input type="text" id="mogrtNickInput" class="lb-search" placeholder="Nick (optional) — or click a row on Leaderboard">
+
+        <div id="mogrtsList" style="margin-top:10px;"></div>
+        <div class="card-sub" id="mogrtMessage"></div>
     </div>
 
 </div>

@@ -4,6 +4,11 @@ title SPIDX WorkUpload Tray
 
 cd /d "%~dp0"
 
+rem Started by the silent .vbs launchers (no window)? Then "pause" would just
+rem leave an invisible cmd.exe waiting for a key press forever.
+set "SPIDX_HIDDEN="
+if /i "%~1"=="hidden" set "SPIDX_HIDDEN=1"
+
 echo.
 echo ========================================
 echo    SPIDX UPLOADER - TRAY LAUNCHER
@@ -35,7 +40,7 @@ if errorlevel 1 (
             echo     node-installer.msi
             echo and run this file again to auto-install it.
             echo.
-            pause
+            call :hold_error
             exit /b 1
         )
     )
@@ -72,7 +77,7 @@ if not exist "node_modules\playwright" (
     if errorlevel 1 (
         echo.
         echo Failed to install Playwright.
-        pause
+        call :hold_error
         exit /b 1
     )
 )
@@ -103,7 +108,7 @@ if not "%SYSTRAY_OK%"=="1" (
         echo.
         echo Failed to install node-systray-v2 — the tray icon needs this.
         echo Check your internet connection and try again.
-        pause
+        call :hold_error
         exit /b 1
     )
 )
@@ -130,7 +135,7 @@ echo.
 echo ========================================
 echo Tray app has stopped.
 echo ========================================
-pause
+if not defined SPIDX_HIDDEN pause
 goto :eof
 
 rem ------------------------------------------------------------------------
@@ -169,3 +174,16 @@ echo.
 echo The installer ran but node.exe still couldn't be found afterwards.
 echo Check the install log for details: %TEMP%\spidx_node_install.log
 exit /b 1
+
+rem ------------------------------------------------------------------------
+rem  Error hold: with a console, wait for a key press so the text can be read.
+rem  When started silently (no console) show a real message box instead of
+rem  failing invisibly.
+rem ------------------------------------------------------------------------
+:hold_error
+if not defined SPIDX_HIDDEN goto :hold_pause
+powershell -NoProfile -Command "Add-Type -AssemblyName System.Windows.Forms; [void][System.Windows.Forms.MessageBox]::Show('Spidx Uploader could not start. Double-click App\start-tray.bat to see the exact error.','Spidx Uploader')" >nul 2>nul
+exit /b 0
+:hold_pause
+pause
+exit /b 0

@@ -1,6 +1,6 @@
 {
   "name": "spidx-workupload-helper",
-  "version": "2.7.3",
+  "version": "2.9.0",
   "private": true,
   "description": "Spidx Uploader helper for Photoshop UXP",
   "main": "server.js",

@@ -607,6 +607,7 @@ function activateTab(target) {
         if (!lbLoadedOnce) lbLoad();
         propsRefresh(); // immediate — poll() then keeps it live every POLL_MS without a manual Refresh
     }
+    if (target === "tabMogrt" && !mogrtsLoadedOnce) mogrtsLoad();
 }
 
 for (var ti = 0; ti < tabButtons.length; ti++) {
@@ -641,6 +642,7 @@ var lbPlayers = [];
 var lbSelectedIndex = -1;
 var lbSearchTimer = null;
 var lbLoadedOnce = false;
+var mogrtsLoadedOnce = false;
 
 function lbCacheFile() {
     return incomingPath ? joinPath(incomingPath, LB_CACHE_NAME) : null;
@@ -734,6 +736,7 @@ function lbSelectRow(idx) {
     var player = lbPlayers[idx];
     var nick = player ? (player.alias || player.name || "") : "";
     if (propsNickInput) propsNickInput.value = nick;
+    if (mogrtNickInput) mogrtNickInput.value = nick;
     propsShowSelectedNick(nick);
 }
 
@@ -939,23 +942,107 @@ propsApplyBtn.addEventListener("click", function () {
 /*  Boot                                                                  */
 /* ---------------------------------------------------------------------- */
 
-(function boot() {
-    var savedCount = Number(localStorage.getItem(BATCH_COUNT_KEY));
-    folderNameInput.value = localStorage.getItem(FOLDER_NAME_KEY) || "";
-    setSelectedBatchCount(savedCount === 2 || savedCount === 3 ? savedCount : 1);
-    setBatchControlsLocked(false);
-    updateFolderLabel();
-    updatePresetLabel();
+/* ---------------- MOGRT tab ---------------- */
+var mogrtsListEl = $("mogrtsList");
+var mogrtsStatusEl = $("mogrtsStatus");
+var mogrtNickInput = $("mogrtNickInput");
+var mogrtMessageEl = $("mogrtMessage");
 
-    if (!incomingPath) {
-        setCard("Link the incoming folder", 'Click "Change incoming folder" and pick App\\incoming.');
-    } else {
-        evalScript("spidxContext()").then(function (context) {
-            if (context.hasComp) setCard("Ready", context.comp + " — frame " + context.frame);
-            else setCard("Ready", "No sequence active yet.");
-        }).catch(function () { /* panel still works; the first click reports the real error */ });
-    }
+function mogrtSay(text, kind) {
+    mogrtMessageEl.textContent = text || "";
+    mogrtMessageEl.className = "card-sub" + (kind ? " " + kind : "");
+}
 
-    poll();
-    setInterval(poll, POLL_MS);
-})();
+function mogrtsLoad() {
+    mogrtsLoadedOnce = true;
+    mogrtsStatusEl.textContent = "Loading...";
+    mogrtsListEl.innerHTML = "";
+
+    evalScript("spidxListMogrts()").then(function (result) {
+        var items = result.items || [];
+        if (!items.length) {
+            mogrtsStatusEl.textContent = "No templates bundled with this panel yet.";
+            return;
+        }
+        mogrtsStatusEl.textContent = "Insert puts the graphic on the timeline at the playhead (on a free track above V1). Install adds it to Essential Graphics > Browse.";
+        items.forEach(function (item) {
+            var card = document.createElement("div");
+            card.className = "card";
+
+            var title = document.createElement("div");
+            title.className = "card-title";
+            title.textContent = item.name || item.file;
+            card.appendChild(title);
+
+            if (item.description) {
+                var sub = document.createElement("div");
+                sub.className = "card-sub";
+                sub.textContent = item.description;
+                card.appendChild(sub);
+            }
+
+            var row = document.createElement("div");
+            row.className = "btn-row";
+
+            var insertBtn = document.createElement("button");
+            insertBtn.className = "btn";
+            insertBtn.textContent = "Insert at playhead";
+            insertBtn.addEventListener("click", function () { mogrtInsert(item, insertBtn); });
+            row.appendChild(insertBtn);
+
+            var installBtn = document.createElement("button");
+            installBtn.className = "btn secondary";
+            installBtn.textContent = "Install";
+            installBtn.addEventListener("click", function () { mogrtInstall(item, installBtn); });
+            row.appendChild(installBtn);
+
+            card.appendChild(row);
+            mogrtsListEl.appendChild(card);
+        });
+    }).catch(function (err) {
+        mogrtsStatusEl.textContent = "Could not load templates: " + err.message;
+    });
+}
+
+function mogrtInsert(item, btn) {
+    var nick = (mogrtNickInput.value || "").replace(/^\s+|\s+$/g, "");
+    btn.disabled = true;
+    var originalText = btn.textContent;
+    btn.textContent = "Inserting...";
+    mogrtSay("");
+
+    // nick fill uses the same Pro gate as the Properties tab
+    evalScript("spidxInsertMogrt(" + esArg(item.file) + ", " + esArg(nick) + ", " + esArg(tierAllowsProFeatures() ? "true" : "false") + ")")
+        .then(function (result) {
+            var msg = "Inserted \"" + (item.name || item.file) + "\" on " + result.track + " at the playhead";
+            if (result.textApplied) msg += " with \"" + nick + "\"";
+            msg += ".";
+            if (result.note) msg += " " + result.note;
+            mogrtSay(msg, result.note ? "" : "ok");
+            btn.textContent = "Inserted \u2713";
+            setTimeout(function () { btn.textContent = originalText; btn.disabled = false; }, 1800);
+        })
+        .catch(function (err) {
+            mogrtSay(err.message, "error");
+            btn.textContent = originalText;
+            btn.disabled = false;
+        });
+}
+
+function mogrtInstall(item, btn) {
+    btn.disabled = true;
+    var originalText = btn.textContent;
+    btn.textContent = "Installing...";
+    mogrtSay("");
+
+    evalScript("spidxInstallMogrt(" + esArg(item.file) + ")").then(function (result) {
+        btn.textContent = result.alreadyInstalled ? "Already installed \u2713" : (result.updated ? "Updated \u2713" : "Installed \u2713");
+        mogrtSay(result.alreadyInstalled
+            ? "Already in Essential Graphics > Browse > Local templates."
+            : "Installed. Open Essential Graphics > Browse > Local templates (close and reopen the panel if it isn't listed yet).", "ok");
+    }).catch(function (err) {
+        btn.disabled = false;
+        btn.textContent = originalText;
+        mogrtSay("Could not install \"" + (item.name || item.file) + "\": " + err.message, "error");
+    });
+}
