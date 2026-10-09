@@ -617,6 +617,7 @@ function handleClick(seqId) {
             }
             break;
         case "quit":
+            try { require("./hotkey.js").stopManager(); } catch {}
             stopHelper();
             try {
                 systray.kill(false);
@@ -755,6 +756,7 @@ function claimSingleInstance() {
     writePidFile();
     setInterval(writePidFile, HEARTBEAT_MS); // heartbeat: keeps the mtime fresh while we run
     process.on("exit", removeOwnPidFile);
+    process.on("exit", () => { try { require("./hotkey.js").stop(); } catch {} });
 }
 
 async function main() {
@@ -809,6 +811,12 @@ async function main() {
     }
 
     startHelper();
+
+    // Global shortcut ("send frame from the active program"): builds + runs the small
+    // background program and keeps it in step with the Dashboard's settings. Never
+    // blocks or breaks startup - a failure here only means no shortcut.
+    try { require("./hotkey.js").startManager(msg => appendLog(`[TRAY][Shortcut] ${msg}\n`)); }
+    catch (error) { appendLog(`[TRAY] Global shortcut manager failed to start: ${error.message}\n`); }
 
     // Update check: doesn't block startup, and checkForUpdate() has its
     // own on-disk daily cache, so this call (and the repeating one below)

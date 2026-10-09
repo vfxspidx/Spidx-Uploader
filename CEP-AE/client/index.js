@@ -313,6 +313,7 @@ $("changeFolder").addEventListener("click", function () {
 /* ---------------------------------------------------------------------- */
 
 function applyEngineStatus(status) {
+    renderPresetSelect(status && status.presets, status && status.activePreset, status && status.activePresetModified);
     var stamp = status && Number(status.updatedAt);
     var online = !!(stamp && (Date.now() - stamp) < ENGINE_STALE_MS);
 
@@ -405,6 +406,7 @@ function poll() {
     applyEngineStatus(readJsonFile(joinPath(incomingPath, ENGINE_STATUS_NAME)));
     applyBatchStatus(readJsonFile(joinPath(incomingPath, BATCH_STATUS_NAME)));
     updateRouteLine();
+    checkCaptureRequest();
 }
 
 // The "Photoshop + Upload" button only makes sense once there's an
@@ -806,6 +808,97 @@ lbSearch.addEventListener("input", function () {
 /* ---------------------------------------------------------------------- */
 /*  Boot                                                                  */
 /* ---------------------------------------------------------------------- */
+
+/* ---------------- global shortcut ---------------- */
+// SpidxHotkey.exe (started by the tray app) writes .capture-request.json when the shortcut
+// is pressed in THIS program. We do exactly what the Upload button does - but first answer
+// in .capture-ack.json, so the key press gets its feedback even though exporting takes seconds.
+var CAPTURE_REQUEST_NAME = ".capture-request.json";
+var CAPTURE_ACK_NAME = ".capture-ack.json";
+var CAPTURE_HOST = "ae";
+var CAPTURE_MAX_AGE_MS = 15000;
+var lastCaptureId = "";
+
+function answerCapture(id, ok, message) {
+    writeTextFile(joinPath(incomingPath, CAPTURE_ACK_NAME), JSON.stringify({ id: id, app: CAPTURE_HOST, ok: ok, message: message || "" }));
+}
+
+function checkCaptureRequest() {
+    if (!incomingPath) return;
+    var request = readJsonFile(joinPath(incomingPath, CAPTURE_REQUEST_NAME));
+    if (!request || !request.id || request.app !== CAPTURE_HOST || request.id === lastCaptureId) return;
+    lastCaptureId = request.id;
+    if (Math.abs(Date.now() - Number(request.time || 0)) > CAPTURE_MAX_AGE_MS) return;   // an old key press, from before this panel was open
+
+    var viaPhotoshop = request.route === "ps";
+    var problem = null;
+    if (busy) problem = "The Spidx panel is still busy with the previous upload.";
+    else if (viaPhotoshop && !tierAllowsProFeatures()) problem = "Photoshop + Upload is a Pro feature.";
+    else if (viaPhotoshop && uploadPsButton.disabled) problem = "No Camera Raw Action is set - choose one in the Dashboard first.";
+    if (problem) { answerCapture(request.id, false, problem); return; }
+
+    answerCapture(request.id, true, "");
+    performUpload(viaPhotoshop);
+}
+
+/* ---------------- client presets ---------------- */
+// The helper publishes the preset names + the active one in its status; choosing one
+// here drops a request file the running helper picks up (live, no restart) and answers.
+var PRESET_REQUEST_NAME = ".preset-request.json";
+var PRESET_RESULT_NAME = ".preset-result.json";
+var presetSelect = $("presetSelect");
+var presetRow = $("presetRow");
+var presetListKey = "";
+var presetSwitching = false;
+
+function renderPresetSelect(names, active, modified) {
+    if (!names || !names.length) { presetRow.style.display = "none"; presetListKey = ""; return; }
+    presetRow.style.display = "";
+    var key = names.join("|") + "#" + (active || "") + "#" + (modified ? "1" : "0");
+    if (key === presetListKey || presetSwitching) return;
+    presetListKey = key;
+
+    presetSelect.innerHTML = "";
+    if (!active) {
+        var none = document.createElement("option");
+        none.value = "";
+        none.textContent = "Choose a preset...";
+        none.selected = true;
+        presetSelect.appendChild(none);
+    }
+    names.forEach(function (name) {
+        var option = document.createElement("option");
+        option.value = name;
+        option.textContent = (name === active && modified) ? name + " (modified)" : name;
+        if (name === active) option.selected = true;
+        presetSelect.appendChild(option);
+    });
+}
+
+presetSelect.addEventListener("change", function () {
+    var name = presetSelect.value;
+    if (!name || !incomingPath) return;
+
+    presetSwitching = true;
+    presetSelect.disabled = true;
+    var id = String(Date.now());
+    writeTextFile(joinPath(incomingPath, PRESET_REQUEST_NAME), JSON.stringify({ id: id, name: name }));
+
+    var tries = 0;
+    var timer = setInterval(function () {
+        tries++;
+        var result = readJsonFile(joinPath(incomingPath, PRESET_RESULT_NAME));
+        var answered = result && result.id === id;
+        if (!answered && tries < 20) return;   // wait up to ~4 s for the helper
+
+        clearInterval(timer);
+        presetSwitching = false;
+        presetSelect.disabled = false;
+        presetListKey = "";   // re-read the list on the next status
+        if (answered && result.ok) setCard("Preset applied", name + (result.message ? " \u2014 " + result.message : ""), "ok");
+        else setCard("Preset not applied", answered ? (result.message || "The helper refused it.") : "The helper didn't answer - is it running?", "error");
+    }, 200);
+});
 
 (function boot() {
     var savedCount = Number(localStorage.getItem(BATCH_COUNT_KEY));

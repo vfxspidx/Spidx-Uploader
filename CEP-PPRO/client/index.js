@@ -56,10 +56,102 @@ var MULTI_BATCH_TIERS = ["pro", "dev", "tester"];
 // the Properties tab) — one name, used everywhere below.
 var PRO_FEATURE_TIERS = MULTI_BATCH_TIERS;
 
-var incomingPath = localStorage.getItem(FOLDER_KEY) || "";
-var presetOverride = localStorage.getItem(PRESET_KEY) || "";
+/* ---------------------------------------------------------------------- */
+/*  Settings storage                                                      */
+/* ---------------------------------------------------------------------- */
+
+// CEP keeps a panel's localStorage inside a cache folder named after the
+// extension id + VERSION (%TEMP%\cep_cache\...), and "Install PPRO Panel.bat"
+// deletes and re-creates the extension folder - so every panel update or
+// reinstall started with empty settings (incoming folder, batch count, preset
+// path "forgotten"). Everything is therefore ALSO mirrored into a small file
+// under %APPDATA%\Spidx Uploader\, which survives updates. localStorage stays
+// the fast path; the file only fills in what localStorage is missing.
+var CONFIG_DIR_NAME = "Spidx Uploader";
+var CONFIG_FILE_NAME = "ppro-panel-config.json";
+
+function userDataDir() {
+    try {
+        var raw = decodeURI(window.__adobe_cep__.getSystemPath("userData"));
+        if (!raw) return null;
+        if (/^file:\/\/\/[A-Za-z]:/i.test(raw)) return raw.replace(/^file:\/\/\//i, ""); // Windows: file:///C:/...
+        return raw.replace(/^file:\/\//i, "");                                           // macOS:   file:///Users/...
+    } catch (err) {
+        return null;
+    }
+}
+
+// This panel's own folder on disk (where host/, client/ and mogrts/ live).
+function extensionPath() {
+    try {
+        var raw = decodeURI(window.__adobe_cep__.getSystemPath("extension"));
+        if (!raw) return "";
+        if (/^file:\/\/\/[A-Za-z]:/i.test(raw)) return raw.replace(/^file:\/\/\//i, "");
+        return raw.replace(/^file:\/\//i, "");
+    } catch (err) {
+        return "";
+    }
+}
+
+var store = (function () {
+    var cache = null;
+
+    function paths() {
+        var base = userDataDir();
+        if (!base) return null;
+        var dir = base.replace(/[\\/]+$/, "") + "/" + CONFIG_DIR_NAME;
+        return { dir: dir, file: dir + "/" + CONFIG_FILE_NAME };
+    }
+
+    function load() {
+        if (cache) return cache;
+        cache = {};
+        try {
+            var p = paths();
+            if (p) {
+                var result = window.cep.fs.readFile(p.file);
+                if (!result.err && result.data) cache = JSON.parse(result.data) || {};
+            }
+        } catch (err) {
+            cache = {};
+        }
+        return cache;
+    }
+
+    function save() {
+        try {
+            var p = paths();
+            if (!p) return;
+            window.cep.fs.makedir(p.dir); // an error just means it already exists
+            window.cep.fs.writeFile(p.file, JSON.stringify(cache));
+        } catch (err) { /* settings still live in localStorage */ }
+    }
+
+    return {
+        get: function (key) {
+            var value = null;
+            try { value = localStorage.getItem(key); } catch (err) {}
+            if (value === null || value === undefined || value === "") {
+                var fromFile = load()[key];
+                if (fromFile !== undefined && fromFile !== null) value = String(fromFile);
+            }
+            return value;
+        },
+        set: function (key, value) {
+            try { localStorage.setItem(key, value); } catch (err) {}
+            load()[key] = String(value);
+            save();
+        }
+    };
+})();
+
+var incomingPath = store.get(FOLDER_KEY) || "";
+var presetOverride = store.get(PRESET_KEY) || "";
 var selectedBatchCount = 1;
 var currentTier = null;
+var currentRoles = [];      // every role of the licence, e.g. ["pro", "spt"] (the helper sends them next to the rank)
+var currentRolesKey = "";
+var pendingBatchCount = 0; // the saved 2/3 count, applied once the tier is known to allow it
 var currentDestination = "workupload";
 var currentDeviceLimitReached = false;
 var lastBatchState = null;
@@ -239,6 +331,52 @@ function tierAllowsProFeatures() {
     return PRO_FEATURE_TIERS.indexOf(currentTier) !== -1;
 }
 
+// The MOGRT tab belongs to its own role: "spt" (the add-on), plus "dev" and "tester".
+// It is deliberately NOT part of Pro. To include Pro customers, add "pro" here -
+// that one line is the only change needed. Roles combine: a licence of
+// "pro+spt" has both, so it gets Pro's features AND this tab.
+var SPT_ROLES = ["spt", "dev", "tester"];
+
+// All roles of this licence (an older helper that only sends the rank counts as one role).
+function currentRoleList() {
+    return currentRoles.length ? currentRoles : (currentTier ? [currentTier] : []);
+}
+
+function tierAllowsMogrt() {
+    var roles = currentRoleList();
+    for (var i = 0; i < SPT_ROLES.length; i++) {
+        if (roles.indexOf(SPT_ROLES[i]) !== -1) return true;
+    }
+    return false;
+}
+
+// "PRO + SPT" - what the badge and the lock message show.
+function roleLabel(roles) {
+    var shown = roles.filter(function (r) { return r !== "free" || roles.length === 1; });
+    return shown.join(" + ").toUpperCase();
+}
+
+// Locks the MOGRT tab for tiers without the SPT role: the tab stays clickable (so the
+// message can say what is missing) but the templates themselves are hidden.
+function updateMogrtLock() {
+    var tabBtn = $("tabBtnMogrt");
+    var locked = !tierAllowsMogrt();
+    if (tabBtn) {
+        tabBtn.classList.toggle("locked", locked);
+        tabBtn.title = locked ? "MOGRT templates need the SPT role." : "";
+    }
+    var lockCard = $("mogrtLocked");
+    var body = $("mogrtBody");
+    if (lockCard && body) {
+        lockCard.style.display = locked ? "" : "none";
+        body.style.display = locked ? "none" : "";
+        var roleList = currentRoleList();
+        $("mogrtLockedText").textContent = "Your role: " + (roleList.length ? roleLabel(roleList) : "unknown (is the helper running?)")
+            + ". The MOGRT templates are a separate add-on - ask for the SPT role to unlock this tab.";
+    }
+    if (!locked && currentTab === "tabMogrt" && !mogrtsLoadedOnce) mogrtsLoad();
+}
+
 // Free-tier lockout for the Properties tab. Runs whenever the tier
 // changes; also called once on load once currentTier is known.
 function updateProFeatureLocks() {
@@ -265,9 +403,9 @@ function setBatchControlsLocked(locked) {
     folderNameInput.disabled = locked;
 }
 
-function setSelectedBatchCount(count) {
+function setSelectedBatchCount(count, persist) {
     selectedBatchCount = count;
-    localStorage.setItem(BATCH_COUNT_KEY, String(count));
+    if (persist !== false) store.set(BATCH_COUNT_KEY, String(count));
     batchButtons.forEach(function (btn) {
         btn.classList.toggle("active", Number(btn.dataset.count) === count);
     });
@@ -283,7 +421,7 @@ batchButtons.forEach(function (btn) {
 });
 
 folderNameInput.addEventListener("input", function () {
-    localStorage.setItem(FOLDER_NAME_KEY, folderNameInput.value);
+    store.set(FOLDER_NAME_KEY, folderNameInput.value);
 });
 
 function writeBatchConfig() {
@@ -306,7 +444,7 @@ function ensureIncomingFolder(forcePicker) {
     if (!picked) throw new Error("No incoming folder was selected.");
 
     incomingPath = picked;
-    localStorage.setItem(FOLDER_KEY, incomingPath);
+    store.set(FOLDER_KEY, incomingPath);
     updateFolderLabel();
     return incomingPath;
 }
@@ -342,7 +480,7 @@ $("changePreset").addEventListener("click", function () {
     var result = window.cep.fs.showOpenDialog(false, false, "Choose pngframe.epr", presetOverride || "");
     if (result.err || !result.data || !result.data.length) return;
     presetOverride = String(result.data[0]);
-    localStorage.setItem(PRESET_KEY, presetOverride);
+    store.set(PRESET_KEY, presetOverride);
     updatePresetLabel();
     setCard("Preset updated", "Using: " + presetOverride, "ok");
 });
@@ -352,6 +490,7 @@ $("changePreset").addEventListener("click", function () {
 /* ---------------------------------------------------------------------- */
 
 function applyEngineStatus(status) {
+    renderPresetSelect(status && status.presets, status && status.activePreset, status && status.activePresetModified);
     var stamp = status && Number(status.updatedAt);
     var online = !!(stamp && (Date.now() - stamp) < ENGINE_STALE_MS);
 
@@ -379,16 +518,29 @@ function applyEngineStatus(status) {
     currentDeviceLimitReached = !!status.deviceLimitReached;
 
     var tier = typeof status.tier === "string" ? status.tier : null;
-    if (tier !== currentTier) {
+    var roles = (status.roles && typeof status.roles.length === "number")
+        ? Array.prototype.slice.call(status.roles).map(String)
+        : (tier ? [tier] : []);
+    var rolesKey = roles.join("+");
+    if (tier !== currentTier || rolesKey !== currentRolesKey) {
         currentTier = tier;
+        currentRoles = roles;
+        currentRolesKey = rolesKey;
         if (!tierAllowsMultiBatch() && selectedBatchCount > 1) setSelectedBatchCount(1);
+        if (tierAllowsMultiBatch() && pendingBatchCount > 1) {
+            setSelectedBatchCount(pendingBatchCount);
+            pendingBatchCount = 0;
+        }
         setBatchControlsLocked(false);
         updateProFeatureLocks();
+        updateMogrtLock();
     }
 
-    tierBadge.className = "tier-badge" + (tier ? " show tier-" + tier : "");
-    if (tier) {
-        tierBadge.textContent = tier.toUpperCase()
+    // badge: the rank's colour, all roles in the text ("PRO + SPT")
+    var badgeClass = ["dev", "tester", "pro", "spt", "free"].filter(function (r) { return roles.indexOf(r) !== -1; })[0];
+    tierBadge.className = "tier-badge" + (badgeClass ? " show tier-" + badgeClass : "");
+    if (badgeClass) {
+        tierBadge.textContent = roleLabel(roles)
             + (status.trialDaysRemaining ? " (" + status.trialDaysRemaining + "D)" : "");
     }
 
@@ -445,6 +597,7 @@ function poll() {
     applyEngineStatus(readJsonFile(joinPath(incomingPath, ENGINE_STATUS_NAME)));
     applyBatchStatus(readJsonFile(joinPath(incomingPath, BATCH_STATUS_NAME)));
     updateRouteLine();
+    checkCaptureRequest();
 }
 
 // The "Photoshop + Upload" button only makes sense once there's an
@@ -506,6 +659,7 @@ function performUpload(viaPhotoshop) {
     var task;
     try {
         ensureIncomingFolder(false);
+        if (selectedBatchCount > 1 && !tierAllowsMultiBatch()) setSelectedBatchCount(1); // multi-file is Pro only
         writeBatchConfig();
 
         if (engineOnline === false) {
@@ -607,7 +761,7 @@ function activateTab(target) {
         if (!lbLoadedOnce) lbLoad();
         propsRefresh(); // immediate — poll() then keeps it live every POLL_MS without a manual Refresh
     }
-    if (target === "tabMogrt" && !mogrtsLoadedOnce) mogrtsLoad();
+    if (target === "tabMogrt") updateMogrtLock(); // loads the templates the first time, when the role allows it
 }
 
 for (var ti = 0; ti < tabButtons.length; ti++) {
@@ -943,14 +1097,41 @@ propsApplyBtn.addEventListener("click", function () {
 /* ---------------------------------------------------------------------- */
 
 /* ---------------- MOGRT tab ---------------- */
+// A template browser: categories (collapsible) of tiles with the template's own
+// preview picture. Clicking a tile inserts it at the playhead - there is
+// nothing to install. The list comes from mogrts/mogrts.json (refreshed by
+// "Update MOGRT list.bat" when .mogrt files are added).
 var mogrtsListEl = $("mogrtsList");
 var mogrtsStatusEl = $("mogrtsStatus");
 var mogrtNickInput = $("mogrtNickInput");
+var mogrtSearchInput = $("mogrtSearch");
 var mogrtMessageEl = $("mogrtMessage");
+var MOGRT_COLLAPSED_KEY = "spidx_ppro_mogrt_collapsed";
+var mogrtItems = [];
+var mogrtInserting = false;
 
 function mogrtSay(text, kind) {
     mogrtMessageEl.textContent = text || "";
     mogrtMessageEl.className = "card-sub" + (kind ? " " + kind : "");
+}
+
+function mogrtCollapsedList() {
+    try { return JSON.parse(store.get(MOGRT_COLLAPSED_KEY) || "[]") || []; } catch (err) { return []; }
+}
+
+// The template list is read straight from mogrts/mogrts.json by the panel
+// itself (cep.fs) - it does not depend on ExtendScript guessing the panel's
+// folder. ExtendScript is only the fallback.
+function mogrtsReadList() {
+    var root = extensionPath();
+    var text = root ? readTextFile(joinPath(root, "mogrts/mogrts.json")) : null;
+    if (text) {
+        try {
+            var parsed = JSON.parse(String(text).replace(/^\uFEFF/, ""));
+            if (Object.prototype.toString.call(parsed) === "[object Array]") return Promise.resolve({ items: parsed, root: root });
+        } catch (err) { /* fall through to the host */ }
+    }
+    return evalScript("spidxListMogrts(" + esArg(root) + ")");
 }
 
 function mogrtsLoad() {
@@ -958,91 +1139,362 @@ function mogrtsLoad() {
     mogrtsStatusEl.textContent = "Loading...";
     mogrtsListEl.innerHTML = "";
 
-    evalScript("spidxListMogrts()").then(function (result) {
-        var items = result.items || [];
-        if (!items.length) {
-            mogrtsStatusEl.textContent = "No templates bundled with this panel yet.";
+    mogrtsReadList().then(function (result) {
+        mogrtItems = result.items || [];
+        if (!mogrtItems.length) {
+            mogrtsStatusEl.textContent = result.missing
+                ? "No templates found - the panel's mogrts folder is missing (looked in: " + (result.root || extensionPath() || "?") + "\\mogrts). Reinstall the Premiere Pro panel."
+                : "No templates bundled with this panel yet.";
             return;
         }
-        mogrtsStatusEl.textContent = "Insert puts the graphic on the timeline at the playhead (on a free track above V1). Install adds it to Essential Graphics > Browse.";
-        items.forEach(function (item) {
-            var card = document.createElement("div");
-            card.className = "card";
-
-            var title = document.createElement("div");
-            title.className = "card-title";
-            title.textContent = item.name || item.file;
-            card.appendChild(title);
-
-            if (item.description) {
-                var sub = document.createElement("div");
-                sub.className = "card-sub";
-                sub.textContent = item.description;
-                card.appendChild(sub);
-            }
-
-            var row = document.createElement("div");
-            row.className = "btn-row";
-
-            var insertBtn = document.createElement("button");
-            insertBtn.className = "btn";
-            insertBtn.textContent = "Insert at playhead";
-            insertBtn.addEventListener("click", function () { mogrtInsert(item, insertBtn); });
-            row.appendChild(insertBtn);
-
-            var installBtn = document.createElement("button");
-            installBtn.className = "btn secondary";
-            installBtn.textContent = "Install";
-            installBtn.addEventListener("click", function () { mogrtInstall(item, installBtn); });
-            row.appendChild(installBtn);
-
-            card.appendChild(row);
-            mogrtsListEl.appendChild(card);
-        });
+        mogrtsStatusEl.textContent = "Click a template to put it on the timeline at the playhead (on a free track above V1).";
+        mogrtsRender();
     }).catch(function (err) {
         mogrtsStatusEl.textContent = "Could not load templates: " + err.message;
     });
 }
 
-function mogrtInsert(item, btn) {
+function mogrtMatches(item, query) {
+    if (!query) return true;
+    var haystack = ((item.name || item.file) + " " + (item.description || "") + " " + (item.category || "")).toLowerCase();
+    return haystack.indexOf(query) !== -1;
+}
+
+function mogrtThumbUrl(relative) {
+    return "../mogrts/" + String(relative).split("/").map(encodeURIComponent).join("/");
+}
+
+function mogrtTile(item, index) {
+    var tile = document.createElement("button");
+    tile.type = "button";
+    tile.className = "mg-tile";
+    tile.style.animationDelay = Math.min(index || 0, 12) * 35 + "ms"; // tiles slide in one after another
+    tile.title = (item.description ? item.description + " \u2014 " : "") + "click to insert at the playhead";
+
+    var box = document.createElement("div");
+    box.className = "mg-thumb";
+    if (item.thumb) {
+        var img = document.createElement("img");
+        img.alt = "";
+        img.onerror = function () { if (img.parentNode) img.parentNode.removeChild(img); box.classList.add("nothumb"); };
+        img.src = mogrtThumbUrl(item.thumb);
+        box.appendChild(img);
+    } else {
+        box.classList.add("nothumb");
+    }
+    tile.appendChild(box);
+
+    // Animated preview while hovering. The <video> is created on the first hover
+    // and only shows once it is really playing; if this Premiere's CEP can't play
+    // the file, it silently stays the still picture (and isn't retried).
+    if (item.preview) {
+        var video = null;
+        tile.addEventListener("mouseenter", function () {
+            if (item.previewFailed) return;
+            if (!video) {
+                video = document.createElement("video");
+                video.muted = true;
+                video.setAttribute("muted", "");
+                video.loop = true;
+                video.setAttribute("playsinline", "");
+                video.preload = "auto";
+                video.addEventListener("playing", function () { video.classList.add("playing"); });
+                video.addEventListener("error", function () {
+                    item.previewFailed = true;
+                    if (video && video.parentNode) video.parentNode.removeChild(video);
+                    video = null;
+                });
+                video.src = mogrtThumbUrl(item.preview);
+                box.appendChild(video);
+            }
+            try {
+                var started = video.play();
+                if (started && started.catch) started.catch(function () { item.previewFailed = true; });
+            } catch (err) { item.previewFailed = true; }
+        });
+        tile.addEventListener("mouseleave", function () {
+            if (!video) return;
+            try { video.pause(); video.currentTime = 0; } catch (err) {}
+            video.classList.remove("playing");
+        });
+    }
+
+    var plus = document.createElement("div");
+    plus.className = "mg-plus";
+    plus.textContent = "+ Insert";
+    tile.appendChild(plus);
+
+    var name = document.createElement("div");
+    name.className = "mg-name";
+    name.textContent = item.name || item.file;
+    tile.appendChild(name);
+
+    var over = document.createElement("div");
+    over.className = "mg-over";
+    tile.appendChild(over);
+
+    tile.addEventListener("click", function () { mogrtInsert(item, tile); });
+    return tile;
+}
+
+// Collapse / expand with a height + fade transition (display:none can't animate,
+// so the grid's height is measured and tweened, then the final state is set).
+function mogrtSetCollapsed(section, grid, collapse) {
+    section.classList.add("animating");
+    if (collapse) {
+        grid.style.height = grid.scrollHeight + "px";
+        void grid.offsetHeight;
+        section.classList.add("collapsing");
+        setTimeout(function () {
+            section.classList.remove("collapsing", "animating");
+            section.classList.add("collapsed");
+            grid.style.height = "";
+        }, 270);
+    } else {
+        section.classList.remove("collapsed");
+        grid.style.height = "0px";
+        grid.style.opacity = "0";
+        void grid.offsetHeight;
+        grid.style.height = grid.scrollHeight + "px";
+        grid.style.opacity = "1";
+        setTimeout(function () {
+            section.classList.remove("animating");
+            grid.style.height = "";
+            grid.style.opacity = "";
+        }, 270);
+    }
+}
+
+function mogrtsRender() {
+    var query = (mogrtSearchInput.value || "").toLowerCase().replace(/^\s+|\s+$/g, "");
+    var collapsed = mogrtCollapsedList();
+    var groups = [];
+    var byName = {};
+
+    mogrtsListEl.innerHTML = "";
+    mogrtItems.forEach(function (item) {
+        if (!mogrtMatches(item, query)) return;
+        var category = item.category || "Templates";
+        if (!byName[category]) { byName[category] = { name: category, items: [] }; groups.push(byName[category]); }
+        byName[category].items.push(item);
+    });
+
+    if (!groups.length) {
+        var none = document.createElement("div");
+        none.className = "card-sub";
+        none.textContent = "No template matches \u201c" + query + "\u201d.";
+        mogrtsListEl.appendChild(none);
+        return;
+    }
+
+    var tileIndex = 0;
+    groups.forEach(function (group) {
+        var section = document.createElement("div");
+        section.className = "mg-section";
+        if (!query && collapsed.indexOf(group.name) !== -1) section.classList.add("collapsed"); // a search always shows matches
+
+        var head = document.createElement("div");
+        head.className = "mg-head";
+        var chev = document.createElement("span");
+        chev.className = "mg-chev";
+        chev.textContent = "\u25BE";
+        var title = document.createElement("span");
+        title.textContent = group.name;
+        var count = document.createElement("span");
+        count.className = "mg-count";
+        count.textContent = String(group.items.length);
+        head.appendChild(chev);
+        head.appendChild(title);
+        head.appendChild(count);
+        var grid = document.createElement("div");
+        grid.className = "mg-grid";
+        head.addEventListener("click", function () {
+            var collapse = !section.classList.contains("collapsed") && !section.classList.contains("collapsing");
+            mogrtSetCollapsed(section, grid, collapse);
+            var list = mogrtCollapsedList().filter(function (n) { return n !== group.name; });
+            if (collapse) list.push(group.name);
+            store.set(MOGRT_COLLAPSED_KEY, JSON.stringify(list));
+        });
+        section.appendChild(head);
+        group.items.forEach(function (item) { grid.appendChild(mogrtTile(item, tileIndex++)); });
+        section.appendChild(grid);
+
+        mogrtsListEl.appendChild(section);
+    });
+}
+
+mogrtSearchInput.addEventListener("input", function () { if (mogrtItems.length) mogrtsRender(); });
+
+function mogrtInsert(item, tile) {
+    if (mogrtInserting) return;
+    if (!tierAllowsMogrt()) { mogrtSay("MOGRT templates need the SPT role.", "error"); return; }
+    mogrtInserting = true;
     var nick = (mogrtNickInput.value || "").replace(/^\s+|\s+$/g, "");
-    btn.disabled = true;
-    var originalText = btn.textContent;
-    btn.textContent = "Inserting...";
+    var over = tile.querySelector(".mg-over");
+    tile.classList.remove("done");
+    tile.classList.add("busy");
+    over.textContent = "Inserting...";
     mogrtSay("");
 
+    function reset(delay) {
+        setTimeout(function () { tile.classList.remove("busy", "done"); mogrtInserting = false; }, delay);
+    }
+
     // nick fill uses the same Pro gate as the Properties tab
-    evalScript("spidxInsertMogrt(" + esArg(item.file) + ", " + esArg(nick) + ", " + esArg(tierAllowsProFeatures() ? "true" : "false") + ")")
+    evalScript("spidxInsertMogrt(" + esArg(item.file) + ", " + esArg(nick) + ", " + esArg(tierAllowsProFeatures() ? "true" : "false") + ", " + esArg(extensionPath()) + ", " + esArg(item.textParam || "") + ")")
         .then(function (result) {
             var msg = "Inserted \"" + (item.name || item.file) + "\" on " + result.track + " at the playhead";
             if (result.textApplied) msg += " with \"" + nick + "\"";
             msg += ".";
             if (result.note) msg += " " + result.note;
             mogrtSay(msg, result.note ? "" : "ok");
-            btn.textContent = "Inserted \u2713";
-            setTimeout(function () { btn.textContent = originalText; btn.disabled = false; }, 1800);
+            tile.classList.remove("busy");
+            tile.classList.add("done");
+            over.textContent = "Inserted \u2713 " + result.track;
+            reset(1400);
         })
         .catch(function (err) {
             mogrtSay(err.message, "error");
-            btn.textContent = originalText;
-            btn.disabled = false;
+            tile.classList.remove("busy", "done");
+            mogrtInserting = false;
         });
 }
 
-function mogrtInstall(item, btn) {
-    btn.disabled = true;
-    var originalText = btn.textContent;
-    btn.textContent = "Installing...";
-    mogrtSay("");
+// "Install PPRO Panel.bat" writes the path of App\incoming next to the
+// install into %APPDATA%\Spidx Uploader\incoming-folder.txt. If no (valid)
+// folder is remembered yet, use it - so a fresh install or a reinstall works
+// without picking the folder by hand.
+function adoptIncomingFromInstaller() {
+    if (incomingPath && folderExists(incomingPath)) return;
+    var base = userDataDir();
+    if (!base) return;
+    var text = readTextFile(base.replace(/[\\/]+$/, "") + "/" + CONFIG_DIR_NAME + "/incoming-folder.txt");
+    if (!text) return;
+    var candidate = String(text).replace(/^\uFEFF/, "").replace(/^\s+|\s+$/g, "");
+    if (candidate && folderExists(candidate)) {
+        incomingPath = candidate;
+        store.set(FOLDER_KEY, incomingPath);
+    }
+}
 
-    evalScript("spidxInstallMogrt(" + esArg(item.file) + ")").then(function (result) {
-        btn.textContent = result.alreadyInstalled ? "Already installed \u2713" : (result.updated ? "Updated \u2713" : "Installed \u2713");
-        mogrtSay(result.alreadyInstalled
-            ? "Already in Essential Graphics > Browse > Local templates."
-            : "Installed. Open Essential Graphics > Browse > Local templates (close and reopen the panel if it isn't listed yet).", "ok");
-    }).catch(function (err) {
-        btn.disabled = false;
-        btn.textContent = originalText;
-        mogrtSay("Could not install \"" + (item.name || item.file) + "\": " + err.message, "error");
+/* ---------------- global shortcut ---------------- */
+// SpidxHotkey.exe (started by the tray app) writes .capture-request.json when the shortcut
+// is pressed in THIS program. We do exactly what the Upload button does - but first answer
+// in .capture-ack.json, so the key press gets its feedback even though exporting takes seconds.
+var CAPTURE_REQUEST_NAME = ".capture-request.json";
+var CAPTURE_ACK_NAME = ".capture-ack.json";
+var CAPTURE_HOST = "ppro";
+var CAPTURE_MAX_AGE_MS = 15000;
+var lastCaptureId = "";
+
+function answerCapture(id, ok, message) {
+    writeTextFile(joinPath(incomingPath, CAPTURE_ACK_NAME), JSON.stringify({ id: id, app: CAPTURE_HOST, ok: ok, message: message || "" }));
+}
+
+function checkCaptureRequest() {
+    if (!incomingPath) return;
+    var request = readJsonFile(joinPath(incomingPath, CAPTURE_REQUEST_NAME));
+    if (!request || !request.id || request.app !== CAPTURE_HOST || request.id === lastCaptureId) return;
+    lastCaptureId = request.id;
+    if (Math.abs(Date.now() - Number(request.time || 0)) > CAPTURE_MAX_AGE_MS) return;   // an old key press, from before this panel was open
+
+    var viaPhotoshop = request.route === "ps";
+    var problem = null;
+    if (busy) problem = "The Spidx panel is still busy with the previous upload.";
+    else if (viaPhotoshop && !tierAllowsProFeatures()) problem = "Photoshop + Upload is a Pro feature.";
+    else if (viaPhotoshop && uploadPsButton.disabled) problem = "No Camera Raw Action is set - choose one in the Dashboard first.";
+    if (problem) { answerCapture(request.id, false, problem); return; }
+
+    answerCapture(request.id, true, "");
+    performUpload(viaPhotoshop);
+}
+
+/* ---------------- client presets ---------------- */
+// The helper publishes the preset names + the active one in its status; choosing one
+// here drops a request file the running helper picks up (live, no restart) and answers.
+var PRESET_REQUEST_NAME = ".preset-request.json";
+var PRESET_RESULT_NAME = ".preset-result.json";
+var presetSelect = $("presetSelect");
+var presetRow = $("presetRow");
+var presetListKey = "";
+var presetSwitching = false;
+
+function renderPresetSelect(names, active, modified) {
+    if (!names || !names.length) { presetRow.style.display = "none"; presetListKey = ""; return; }
+    presetRow.style.display = "";
+    var key = names.join("|") + "#" + (active || "") + "#" + (modified ? "1" : "0");
+    if (key === presetListKey || presetSwitching) return;
+    presetListKey = key;
+
+    presetSelect.innerHTML = "";
+    if (!active) {
+        var none = document.createElement("option");
+        none.value = "";
+        none.textContent = "Choose a preset...";
+        none.selected = true;
+        presetSelect.appendChild(none);
+    }
+    names.forEach(function (name) {
+        var option = document.createElement("option");
+        option.value = name;
+        option.textContent = (name === active && modified) ? name + " (modified)" : name;
+        if (name === active) option.selected = true;
+        presetSelect.appendChild(option);
     });
 }
+
+presetSelect.addEventListener("change", function () {
+    var name = presetSelect.value;
+    if (!name || !incomingPath) return;
+
+    presetSwitching = true;
+    presetSelect.disabled = true;
+    var id = String(Date.now());
+    writeTextFile(joinPath(incomingPath, PRESET_REQUEST_NAME), JSON.stringify({ id: id, name: name }));
+
+    var tries = 0;
+    var timer = setInterval(function () {
+        tries++;
+        var result = readJsonFile(joinPath(incomingPath, PRESET_RESULT_NAME));
+        var answered = result && result.id === id;
+        if (!answered && tries < 20) return;   // wait up to ~4 s for the helper
+
+        clearInterval(timer);
+        presetSwitching = false;
+        presetSelect.disabled = false;
+        presetListKey = "";   // re-read the list on the next status
+        if (answered && result.ok) setCard("Preset applied", name + (result.message ? " \u2014 " + result.message : ""), "ok");
+        else setCard("Preset not applied", answered ? (result.message || "The helper refused it.") : "The helper didn't answer - is it running?", "error");
+    }, 200);
+});
+
+(function boot() {
+    var savedCount = Number(store.get(BATCH_COUNT_KEY));
+    pendingBatchCount = (savedCount === 2 || savedCount === 3) ? savedCount : 0;
+    folderNameInput.value = store.get(FOLDER_NAME_KEY) || "";
+
+    // The tier is unknown until the engine's status file has been read, and
+    // unknown means locked: start on 1 file with 2/3 and the Pro tabs/buttons
+    // locked. (Without this, nothing locked them until a tier showed up - so
+    // with no helper running, or no folder chosen, everything stayed open.)
+    setSelectedBatchCount(1, false);
+    setBatchControlsLocked(false);
+    updateProFeatureLocks();
+    updateMogrtLock();
+
+    adoptIncomingFromInstaller();
+    updateFolderLabel();
+    updatePresetLabel();
+
+    if (!incomingPath) {
+        setCard("Link the incoming folder", 'Click "Change incoming folder" and pick App\\incoming.');
+    } else {
+        evalScript("spidxContext()").then(function (context) {
+            if (context.hasComp) setCard("Ready", context.comp + " — frame " + context.frame);
+            else setCard("Ready", "No sequence active yet.");
+        }).catch(function () { /* panel still works; the first click reports the real error */ });
+    }
+
+    poll();
+    setInterval(poll, POLL_MS);
+})();

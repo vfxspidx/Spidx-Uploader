@@ -84,16 +84,60 @@ icons/                   Reused from the AE panel
 Install PPRO Panel.bat   Installer (PlayerDebugMode + copy to CEP extensions)
 PRESET-SETUP.txt         One-time PNG preset setup, read this first
 
-------------------------------------------------------------------------
-MOGRT tab (v1.1.0)
-------------------------------------------------------------------------
-Templates bundled in mogrts/ (listed by mogrts/mogrts.json):
-  - "Insert at playhead": puts the graphic on the timeline at the playhead,
-    on the first FREE video track above V1 (it never touches V1 or overwrites
-    an existing clip - add an empty track if it says none is free). If a nick
-    is typed / picked on the Leaderboard tab, it is written into the graphic's
-    text (Pro feature, same as the Properties tab).
-  - "Install": copies the .mogrt into Premiere's Local Templates Folder
-    (%APPDATA%\Adobe\Common\Motion Graphics Templates) so it shows up in
-    Essential Graphics > Browse. Uninstalling the panel does not remove them.
 
+
+------------------------------------------------------------------------
+MOGRT tab (v1.3.2) - a template browser, nothing to install
+------------------------------------------------------------------------
+Tab order: Uploader | Leaderboard | MOGRT | Properties.
+
+Templates are tiles with the template's own preview picture, grouped into
+collapsible categories (Eliminations, Damage, ...), with a search box. Tiles
+slide in, lift on hover and PLAY the template's animated preview while hovering
+(if this Premiere can't play the video, the still picture just stays).
+CLICK A TILE and the graphic is put on the timeline at the playhead, on the
+first FREE video track above V1 (it never touches V1 or overwrites an existing
+clip - add an empty track if it says none is free).
+
+THE NICK: if a nick is typed in the box (or clicked on the Leaderboard tab) it is
+written into the graphic. Which text field gets it is set per template in
+mogrts\mogrts.json with "textParam" - the field's name exactly as Essential
+Graphics shows it (e.g. "Change Name", "big vicobuca", "190 Damage"), or its
+position among the text fields ("2"). Without it the panel guesses: a field named
+like a nick/name/player, else the LAST text field. Writing the nick needs Pro
+(or Dev/Tester), same as the Properties tab.
+
+WHO CAN USE IT: the MOGRT tab belongs to its own role, "SPT" (plus dev and tester).
+Pro alone does NOT unlock it - to include Pro, add "pro" to SPT_ROLES at the top of
+the MOGRT section in client\index.js.
+Roles COMBINE: the license server (Apps Script) sends one signed value per user -
+"pro" (rank only), "spt" (the add-on only) or "pro+spt" (both: Pro's features AND the
+MOGRT tab). Separators + , | or space; the badge shows "PRO + SPT". Ranks (free < pro <
+tester < dev) decide Drive, 2-3 files per upload and Photoshop + Upload; "spt" is not a
+rank, so a user with only "spt" counts as free for all of that.
+NOTE: the templates ship inside this panel, so this is a licence gate, not copy
+protection.
+
+Adding templates: drop .mogrt files into the mogrts\ folder, run
+"Update MOGRT list.bat" (it pulls each template's preview picture + animated
+preview out of the file and updates mogrts\mogrts.json), then reinstall the panel.
+In mogrts.json you can rename a template, give it a description, a "category" and
+the "textParam" above.
+
+If the tab says "mogrts folder is missing", the panel was installed without its
+mogrts\ folder: reinstall it (Dashboard > Plugins > Premiere Pro > Reinstall, or
+"Install PPRO Panel.bat").
+
+------------------------------------------------------------------------
+Settings & tier (v1.1.1)
+------------------------------------------------------------------------
+- The panel's settings (incoming folder, batch count, folder name, preset
+  path) are saved in two places: Premiere's panel storage AND the file
+  %APPDATA%\Spidx Uploader\ppro-panel-config.json. The file survives
+  reinstalls and updates of the panel (CEP resets its own storage whenever the
+  extension folder is re-created).
+- "Install PPRO Panel.bat" also writes %APPDATA%\Spidx Uploader\incoming-folder.txt
+  (the App\incoming next to this install). A fresh install picks that up
+  automatically, so you don't have to choose the folder by hand.
+- Files-per-upload 2/3, Photoshop + Upload and the Properties tab are Pro
+  features. Until the helper reports your tier they stay LOCKED.

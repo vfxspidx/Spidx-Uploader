@@ -36,17 +36,25 @@ function ensureSharp() {
 // untouched instead of failing the whole upload.
 const COMPRESSIBLE_RE = /\.(jpe?g|png|webp|tiff?)$/i;
 
-async function compress(filePath) {
+async function compress(filePath, options) {
     const stat = fs.statSync(filePath);
 
-    if (!COMPRESSIBLE_RE.test(filePath) || stat.size <= COMPRESS_TARGET_BYTES) {
+    // From the helper's "compression" setting (a client preset can change it):
+    // switched off -> upload the file as it is; otherwise aim for targetBytes.
+    const enabled = !options || options.enabled !== false;
+    const targetBytes = options && Number.isFinite(options.targetBytes) && options.targetBytes > 0 ? options.targetBytes : COMPRESS_TARGET_BYTES;
+
+    if (!enabled || !COMPRESSIBLE_RE.test(filePath) || stat.size <= targetBytes) {
         return { ok: true, path: filePath, originalSize: stat.size, finalSize: stat.size, compressed: false };
     }
 
     const sh = ensureSharp();
     const originalBuffer = fs.readFileSync(filePath);
 
-    let low = COMPRESS_QUALITY_LOW;
+    // The default 1.5 MB target never needed more than quality 65. A preset can ask for a
+    // much smaller file - let the search go lower for those instead of giving up at 65.
+    const qualityFloor = targetBytes < 1024 * 1024 ? 30 : COMPRESS_QUALITY_LOW;
+    let low = qualityFloor;
     let high = COMPRESS_QUALITY_HIGH;
     let bestBuffer = null;
 
@@ -54,7 +62,7 @@ async function compress(filePath) {
         const quality = Math.round((low + high) / 2);
         const buffer = await sh(originalBuffer).jpeg({ quality, mozjpeg: true }).toBuffer();
 
-        if (buffer.length > COMPRESS_TARGET_BYTES) {
+        if (buffer.length > targetBytes) {
             high = quality;
         } else {
             bestBuffer = buffer;
@@ -63,7 +71,7 @@ async function compress(filePath) {
     }
 
     if (!bestBuffer) {
-        bestBuffer = await sh(originalBuffer).jpeg({ quality: COMPRESS_QUALITY_LOW, mozjpeg: true }).toBuffer();
+        bestBuffer = await sh(originalBuffer).jpeg({ quality: qualityFloor, mozjpeg: true }).toBuffer();
     }
 
     const outPath = filePath.replace(/\.[^.]+$/i, "") + ".compressed.jpg";
@@ -72,8 +80,8 @@ async function compress(filePath) {
     return { ok: true, path: outPath, originalSize: stat.size, finalSize: bestBuffer.length, compressed: true };
 }
 
-parentPort.on("message", ({ filePath }) => {
-    compress(filePath)
+parentPort.on("message", ({ filePath, options }) => {
+    compress(filePath, options)
         .then(result => parentPort.postMessage(result))
         .catch(error => parentPort.postMessage({ ok: false, message: error.message }));
 });

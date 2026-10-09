@@ -169,7 +169,7 @@ function compile(csc, apiDll) {
     const outDir = fs.mkdtempSync(path.join(os.tmpdir(), "spidx-vegas-"));
     const outDll = path.join(outDir, DLL_NAME);
     const args = [
-        "/nologo", "/optimize+", "/target:library", "/out:" + outDll,
+        "/nologo", "/utf8output", "/optimize+", "/target:library", "/out:" + outDll,
         "/reference:" + apiDll,
         "/reference:System.dll", "/reference:System.Windows.Forms.dll", "/reference:System.Drawing.dll",
         "/reference:System.Web.Extensions.dll", "/reference:System.Core.dll",

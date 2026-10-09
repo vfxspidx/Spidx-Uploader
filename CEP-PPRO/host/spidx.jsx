@@ -132,6 +132,28 @@ function spidxPresetPath() {
  *  Motion Graphics Templates — the panel's "MOGRT" tab
  * ---------------------------------------------------------------------- */
 
+// Where this panel lives on disk. Computed ONCE here, at load time, when
+// $.fileName is certainly the path of THIS file - inside a function that is
+// later called through evalScript(), $.fileName is not guaranteed to still be
+// it. The panel also passes its own folder (CSInterface's "extension" path)
+// into every MOGRT call below, and that wins when it is given.
+var SPIDX_EXT_ROOT = null;
+try { SPIDX_EXT_ROOT = new File($.fileName).parent.parent.fsName; } catch (e) { SPIDX_EXT_ROOT = null; }
+
+// The panel folder that actually contains mogrts/ (first candidate that does),
+// or the first candidate when none does so the error can say where it looked.
+function spidxBundleRoot(extPath) {
+    var candidates = [];
+    if (extPath) candidates.push(String(extPath).replace(/[\\\/]+$/, ""));
+    if (SPIDX_EXT_ROOT) candidates.push(SPIDX_EXT_ROOT);
+    try { candidates.push(new File($.fileName).parent.parent.fsName); } catch (e) {}
+
+    for (var i = 0; i < candidates.length; i++) {
+        if (new Folder(candidates[i] + "/mogrts").exists) return candidates[i];
+    }
+    return candidates.length ? candidates[0] : null;
+}
+
 // Reads mogrts/mogrts.json, bundled next to this panel (same
 // $.fileName-relative trick spidxPresetPath() above uses for presets/).
 // Passed straight through as raw JSON text rather than parsed - it's a
@@ -139,11 +161,11 @@ function spidxPresetPath() {
 // reliable JSON object. Because it's hand-edited, a stray BOM or a
 // missing bracket would otherwise surface as the unreadable "Unexpected
 // response from Premiere Pro", so the shape is sanity-checked here.
-function spidxListMogrts() {
+function spidxListMogrts(extPath) {
     try {
-        var thisFile = new File($.fileName);
-        var jsonFile = new File(thisFile.parent.parent.fsName + "/mogrts/mogrts.json");
-        if (!jsonFile.exists) return '{"ok":true,"items":[]}';
+        var root = spidxBundleRoot(extPath);
+        var jsonFile = new File(String(root) + "/mogrts/mogrts.json");
+        if (!jsonFile.exists) return '{"ok":true,"items":[],"missing":true,"root":"' + spidxEscape(String(root)) + '"}';
 
         jsonFile.open("r");
         jsonFile.encoding = "UTF-8";
@@ -162,27 +184,6 @@ function spidxListMogrts() {
     }
 }
 
-// Premiere's own "Local Templates Folder" - the one Essential Graphics >
-// Browse reads. It is per-USER and shared across Premiere versions:
-//     Windows: %APPDATA%\Adobe\Common\Motion Graphics Templates
-//     macOS:   ~/Library/Application Support/Adobe/Common/Motion Graphics Templates
-// (NOT under Documents\Adobe\Premiere Pro\<version>\ - a file copied there
-// is never listed.) ExtendScript's Folder.userData is exactly %APPDATA% /
-// Application Support, so this works on both platforms.
-function spidxMotionGraphicsTemplatesFolder() {
-    var base = Folder.userData;
-    if (!base || !base.exists) return null;
-
-    var steps = ["Adobe", "Common", "Motion Graphics Templates"];
-    var path = base.fsName;
-    for (var i = 0; i < steps.length; i++) {
-        path += "/" + steps[i];
-        var folder = new Folder(path);
-        if (!folder.exists && !folder.create()) return null;
-    }
-    return new Folder(path);
-}
-
 // A file name coming from the panel must be a plain "something.mogrt" -
 // never a path.
 function spidxSafeMogrtName(fileName) {
@@ -192,41 +193,8 @@ function spidxSafeMogrtName(fileName) {
     return name;
 }
 
-function spidxBundledMogrt(fileName) {
-    var thisFile = new File($.fileName);
-    return new File(thisFile.parent.parent.fsName + "/mogrts/" + fileName);
-}
-
-// Copies a .mogrt bundled in mogrts/ into Premiere's Local Templates
-// Folder, so it shows up in Essential Graphics > Browse > Local templates
-// without anyone touching the filesystem by hand. If the same file is
-// already there it is left alone; if the bundled one is a different build
-// (different size) it replaces the old copy, so panel updates reach it.
-function spidxInstallMogrt(fileName) {
-    try {
-        var name = spidxSafeMogrtName(fileName);
-        if (!name) return spidxFail("Invalid template name: " + fileName);
-
-        var source = spidxBundledMogrt(name);
-        if (!source.exists) return spidxFail("Bundled file not found: " + name);
-
-        var destFolder = spidxMotionGraphicsTemplatesFolder();
-        if (!destFolder) return spidxFail("Could not find or create Premiere's Motion Graphics Templates folder (" + Folder.userData.fsName + "/Adobe/Common/Motion Graphics Templates) - check the folder isn't read-only.");
-
-        var dest = new File(destFolder.fsName + "/" + name);
-        var updated = false;
-        if (dest.exists) {
-            if (dest.length === source.length) return '{"ok":true,"alreadyInstalled":true}';
-            if (!dest.remove()) return spidxFail("The installed copy of " + name + " is outdated but locked - close Premiere Pro and try again.");
-            updated = true;
-        }
-
-        if (!source.copy(dest.fsName)) return spidxFail("Could not copy the file - check Premiere isn't locking the destination folder.");
-
-        return '{"ok":true,"alreadyInstalled":false,"updated":' + (updated ? "true" : "false") + '}';
-    } catch (err) {
-        return spidxFail(err.toString());
-    }
+function spidxBundledMogrt(fileName, extPath) {
+    return new File(String(spidxBundleRoot(extPath)) + "/mogrts/" + fileName);
 }
 
 // Picks the video track a new graphic should land on. importMGT() OVERWRITES
@@ -263,15 +231,15 @@ function spidxFreeVideoTrackIndex(seq, startSeconds) {
 // (no install step needed), then - if a nick is given and the user's tier
 // allows it - writes it into the graphic's text property, like the
 // Properties tab does for an existing clip.
-function spidxInsertMogrt(fileName, nick, allowText) {
+function spidxInsertMogrt(fileName, nick, allowText, extPath, textParam) {
     try {
         var seq = spidxActiveSequence();
         if (!seq) return spidxFail("No sequence is active - open a sequence in the Timeline panel, then try again.");
 
         var name = spidxSafeMogrtName(fileName);
         if (!name) return spidxFail("Invalid template name: " + fileName);
-        var source = spidxBundledMogrt(name);
-        if (!source.exists) return spidxFail("Bundled file not found: " + name);
+        var source = spidxBundledMogrt(name, extPath);
+        if (!source.exists) return spidxFail("Bundled file not found: " + source.fsName + " - reinstall the Premiere Pro panel (an older Windows installer skipped the mogrts folder).");
 
         var pos = seq.getPlayerPosition();
         var trackIndex = spidxFreeVideoTrackIndex(seq, Number(pos.seconds));
@@ -293,7 +261,7 @@ function spidxInsertMogrt(fileName, nick, allowText) {
             } else {
                 try {
                     var component = item.getMGTComponent();
-                    var param = component ? spidxPickTextParam(component) : null;
+                    var param = component ? spidxPickTextParam(component, textParam) : null;
                     if (param) {
                         spidxWriteParamText(param, String(nick));
                         textApplied = true;
@@ -607,21 +575,61 @@ function spidxWriteParamText(param, text) {
     }
 }
 
-// Which text parameter of a freshly inserted graphic should receive the
-// nick: prefer one that is named like it (nick / name / player), else the
-// first text-like one.
-function spidxPickTextParam(component) {
+// The text a text parameter currently shows (unwraps the {"textEditValue":..}
+// blob when that is what getValue() returned).
+function spidxPlainText(rawValue) {
+    var s = String(rawValue);
+    var m = s.match(/"textEditValue"\s*:\s*"((?:[^"\\]|\\[\s\S])*)"/);
+    return m ? m[1] : s;
+}
+
+// Which text parameter of a freshly inserted graphic receives the nick.
+//   1. "hint" - set per template in mogrts.json ("textParam": either the
+//      parameter's name exactly as Essential Graphics shows it, or its
+//      1-based position among the template's TEXT parameters). This is the
+//      reliable way: template authors name controls anything they like (one of
+//      ours is literally named after its sample nick, "big vicobuca").
+//   2. a parameter named like a nick (nick / name / player / gamertag),
+//   3. with several text parameters: the LAST one (a fixed label such as
+//      "ELIMINATED" comes first, the changing name after it),
+//   4. otherwise the only/first one.
+// Before this, step 3 did not exist, so a template whose name field wasn't
+// named like a nick got the nick written over its fixed "ELIMINATED" label.
+function spidxPickTextParam(component, hint) {
     var props = component.properties;
-    var first = null;
+    var list = [];   // text-like parameters
+    var all = [];    // every parameter (by name)
     for (var i = 0; i < props.numItems; i++) {
         var param = props[i];
         var raw = null;
         try { raw = param.getValue(); } catch (e) { raw = null; }
+        all.push({ param: param, name: String(param.displayName) });
         if (!spidxParamLooksLikeText(raw)) continue;
-        if (!first) first = param;
-        if (/nick|name|player|gamertag/i.test(String(param.displayName))) return param;
+        list.push({ param: param, name: String(param.displayName), text: spidxPlainText(raw) });
     }
-    return first;
+
+    var wanted = (hint === undefined || hint === null) ? "" : String(hint).replace(/^\s+|\s+$/g, "");
+    if (wanted !== "") {
+        if (/^\d+$/.test(wanted)) {
+            var index = parseInt(wanted, 10) - 1;
+            if (index >= 0 && index < list.length) return list[index].param;
+        } else {
+            // A NAME hint is trusted even for a field whose content is a number:
+            // getValue() gives a text field showing "190" (our damage counter) and
+            // a slider at 190 the same plain string, so the author's hint decides.
+            var lowered = wanted.toLowerCase();
+            var k;
+            for (k = 0; k < all.length; k++) if (all[k].name.toLowerCase() === lowered) return all[k].param;
+            for (k = 0; k < all.length; k++) if (all[k].name.toLowerCase().indexOf(lowered) !== -1) return all[k].param;
+        }
+        // a hint that matches nothing falls through to the automatic choice
+    }
+    if (!list.length) return null;
+
+    for (var n = 0; n < list.length; n++) {
+        if (/nick|name|player|gamertag/i.test(list[n].name)) return list[n].param;
+    }
+    return list[list.length - 1].param;
 }
 
 // Returns the selected clip's text-like Essential Graphics properties,

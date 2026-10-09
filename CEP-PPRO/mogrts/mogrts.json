@@ -1,17 +1,29 @@
 [
   {
     "file": "IGN.mogrt",
-    "name": "IGN Main",
-    "description": "\"ELIMINATED [nick]\"
+    "name": "Eliminated (Bold)",
+    "description": "\"ELIMINATED [nick]\" callout, bold red style.",
+    "category": "Eliminations",
+    "thumb": "thumbs/IGN.png",
+    "textParam": "Change Name",
+    "preview": "thumbs/IGN.mp4"
   },
   {
     "file": "IGN_Clean.mogrt",
-    "name": "IGN Clean",
-    "description": "\"ELIMINATED [nick]\"
+    "name": "Eliminated (Clean)",
+    "description": "\"ELIMINATED [nick]\" callout, muted gray/red style.",
+    "category": "Eliminations",
+    "thumb": "thumbs/IGN_Clean.png",
+    "textParam": "big vicobuca",
+    "preview": "thumbs/IGN_Clean.mp4"
   },
   {
     "file": "190_Damage.mogrt",
-    "name": "190 Damage",
-    "description": "Damage For Thumbnails."
+    "name": "Damage Counter",
+    "description": "Damage number popup.",
+    "category": "Damage",
+    "thumb": "thumbs/190_Damage.png",
+    "textParam": "190 Damage",
+    "preview": "thumbs/190_Damage.mp4"
   }
 ]

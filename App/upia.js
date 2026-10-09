@@ -1,23 +1,35 @@
 "use strict";
 
 /* ========================================================================
- *  UPIA (Unified Plugin Installer Agent)
+ *  UPIA (Unified Plugin Installer Agent) - read-only helpers
  *
- *  Adobe's own command-line tool for installing/removing packaged UXP
- *  plugins (.ccx files) -- the Photoshop-panel equivalent of what the
- *  CEP-AE / CEP-PPRO .bat installers do for After Effects and Premiere
- *  Pro. It ships as part of the Creative Cloud desktop app, not as
- *  something Spidx Uploader bundles, so every function here can fail
- *  simply because CCD isn't installed on this machine -- that's a normal,
- *  expected outcome, not a bug, and callers should show it as such.
+ *  Installing / removing the Photoshop panel is done by the elevated
+ *  scripts UXP\Install PS Panel.bat and UXP\Uninstall PS Panel.bat - they
+ *  run Adobe's UnifiedPluginInstallerAgent.exe as Administrator, exactly
+ *  like typing the command in an Administrator Command Prompt. (Run without
+ *  admin rights, UPIA rejects the .ccx with errors such as status = -432.)
  *
- *  Shared between setup-wizard.js and dashboard.js so both "Install the
- *  Photoshop panel" buttons behave identically.
+ *  What stays here is only what works fine WITHOUT admin rights:
+ *    getUpiaPath()      where Adobe's installer lives (Creative Cloud needed)
+ *    listInstalled()    "/list all" -> is the panel installed under Photoshop?
+ *    readCcxVersion()   the version inside the bundled .ccx
+ *
+ *  "/list all" groups plugins per Adobe app, like:
+ *      4 extensions installed for After Effects (ver 26.5.0)
+ *      Status    Extension Name    Version
+ *      =======   ===============   =======
+ *      ...rows...
+ *      2 extensions installed for Photoshop (ver 27.x)
+ *      ...rows...
+ *  The After Effects CEP panel is ALSO called "Spidx Uploader", so matching
+ *  the name anywhere in the output would wrongly report the Photoshop panel
+ *  as installed. Rows are therefore only counted inside the Photoshop section.
  * ==================================================================== */
 
 const path = require("path");
 const fs = require("fs");
 const { spawn } = require("child_process");
+const { readZip } = require("./zip-util.js");
 
 // Checked at both possible Common Files locations because Adobe's own
 // components can land in the 32-bit Common Files folder on a machine
@@ -31,109 +43,107 @@ const CANDIDATE_PATHS = [
         "UnifiedPluginInstallerAgent", "UnifiedPluginInstallerAgent.exe")
 ];
 
+const LIST_TIMEOUT_MS = 15 * 1000;
+
 function getUpiaPath() {
+    if (process.env.SPIDX_UPIA_PATH) return fs.existsSync(process.env.SPIDX_UPIA_PATH) ? process.env.SPIDX_UPIA_PATH : null; // tests
     for (const p of CANDIDATE_PATHS) {
         if (fs.existsSync(p)) return p;
     }
     return null;
 }
 
-// Same "wait for spawn/error, but don't hang forever" pattern as
-// spawnBatFile() in setup-wizard.js / dashboard.js -- UPIA runs and
-// exits quickly (it's not an interactive console window like the CEP
-// .bat installers), so the timeout here is shorter.
-function runUpia(args, log, cb) {
-    const upiaPath = getUpiaPath();
-    if (!upiaPath) {
-        cb(false, "Creative Cloud desktop app (which provides the Photoshop plugin installer) was not found on this computer.");
-        return;
-    }
-    let done = false;
-    const finish = (ok, message) => {
-        if (done) return;
-        done = true;
-        cb(ok, message);
-    };
+// The version inside the bundled .ccx (its manifest.json), or null.
+function readCcxVersion(ccxPath) {
     try {
-        const child = spawn(upiaPath, args, { windowsHide: true, detached: true });
-        let stderr = "";
-        child.stderr && child.stderr.on("data", chunk => { stderr += chunk.toString(); });
-        child.once("spawn", () => finish(true, null));
-        child.once("error", err => {
-            log(`Could not start UPIA: ${err.message}`);
-            finish(false, err.message);
-        });
-        child.on("exit", code => log(`UPIA ${args[0]} exited with code ${code}${stderr ? ` — ${stderr.trim()}` : ""}.`));
-        child.unref();
-        setTimeout(() => finish(true, null), 1200);
-    } catch (err) {
-        finish(false, err.message);
+        const entry = readZip(fs.readFileSync(ccxPath)).find(e => e.name === "manifest.json");
+        return entry ? (JSON.parse(entry.data.toString("utf8")).version || null) : null;
+    } catch {
+        return null;
     }
 }
 
-function installCcx(ccxPath, log, cb) {
-    if (!fs.existsSync(ccxPath)) {
-        cb(false, "The Photoshop panel (.ccx) was not found next to the App folder.");
-        return;
+const SECTION_HEADER = /^\s*\d+\s+extensions?\s+installed\s+for\s+(.+?)\s*(?:\(\s*ver[^)]*\))?\s*$/i;
+
+// Finds the panel in "/list all" output - only inside the Photoshop section
+// when the output is grouped per app (see the note at the top). If the output
+// has no section headers at all (an unknown/older format), falls back to a
+// whole-output match on the id or name.
+function findPluginInList(stdout, pluginId, names) {
+    const lines = String(stdout || "").split(/\r?\n/);
+    const id = String(pluginId || "").toLowerCase();
+    const wanted = (names || []).map(n => String(n).toLowerCase()).filter(Boolean);
+    const matches = lower => (id && lower.indexOf(id) !== -1) || wanted.some(n => lower.indexOf(n) !== -1);
+
+    const hasSections = lines.some(l => SECTION_HEADER.test(l));
+    let currentApp = null;
+
+    for (let i = 0; i < lines.length; i++) {
+        const header = lines[i].match(SECTION_HEADER);
+        if (header) { currentApp = header[1].toLowerCase(); continue; }
+        if (!matches(lines[i].toLowerCase())) continue;
+        if (hasSections && !(currentApp && currentApp.indexOf("photoshop") !== -1)) continue; // e.g. the AE panel
+
+        let version = null;
+        const lookahead = lines.slice(i, i + 4);
+        for (const l of lookahead) {
+            const labelled = l.match(/version\D{0,4}(\d+(?:\.\d+){1,3})/i);
+            if (labelled) { version = labelled[1]; break; }
+        }
+        if (!version) {
+            const loose = lines[i].match(/\b(\d+\.\d+(?:\.\d+){0,2})\b/);
+            if (loose) version = loose[1];
+        }
+        return { installed: true, version };
     }
-    log(`Installing Photoshop panel via UPIA from "${ccxPath}".`);
-    runUpia(["/install", ccxPath], log, cb);
+    return { installed: false, version: null };
 }
 
-function removeCcx(pluginId, log, cb) {
-    log(`Removing Photoshop panel via UPIA (id "${pluginId}").`);
-    runUpia(["/remove", pluginId], log, cb);
-}
-
-// Unlike installCcx/removeCcx (fire-and-forget: we only care that Windows
-// accepted the request), this needs the real stdout -- "/list all" prints
-// every installed CEP/UXP plugin, one per line, and this just checks
-// whether our plugin id shows up in it. That's the only reliable way to
-// know if the Photoshop panel is actually installed, since a .ccx sitting
-// next to the App folder and UPIA being present (what readPluginStatus()
-// used to check) say nothing about whether /install actually succeeded
-// or was ever run.
-function listInstalled(pluginId, log, cb) {
+// cb(installed: true|false|null, message, info?) - null = couldn't find out.
+// Works without admin rights.
+function listInstalled(pluginId, log, cb, opts) {
+    const names = (opts && opts.names) || [];
     const upiaPath = getUpiaPath();
-    if (!upiaPath) {
-        cb(null, "Creative Cloud desktop app not found.");
-        return;
-    }
-    let done = false;
-    const finish = (installed, message) => {
-        if (done) return;
-        done = true;
-        cb(installed, message);
+    if (!upiaPath) { cb(null, "Creative Cloud desktop app not found."); return; }
+
+    let stdout = "";
+    let stderr = "";
+    let settled = false;
+    let timer = null;
+    const finish = (installed, message, info) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        cb(installed, message, info);
     };
+
+    let child;
     try {
-        const child = spawn(upiaPath, ["/list", "all"], { windowsHide: true });
-        let stdout = "";
-        let stderr = "";
-        child.stdout && child.stdout.on("data", chunk => { stdout += chunk.toString(); });
-        child.stderr && child.stderr.on("data", chunk => { stderr += chunk.toString(); });
-        child.once("error", err => {
-            log(`Could not run UPIA /list: ${err.message}`);
-            finish(null, err.message);
-        });
-        child.once("close", code => {
-            if (code !== 0) {
-                log(`UPIA /list all exited with code ${code}${stderr ? ` — ${stderr.trim()}` : ""}.`);
-                finish(null, stderr || `exit code ${code}`);
-                return;
-            }
-            // Log the raw output every time, not just on failure — this is
-            // the only way to see the real format UPIA prints (name vs id
-            // vs GUID) if the substring match below turns out wrong.
-            log(`UPIA /list all output:\n${stdout.trim() || "(empty)"}`);
-            finish(stdout.toLowerCase().indexOf(pluginId.toLowerCase()) !== -1, null);
-        });
-        // /list all is a quick, synchronous-ish query (not an installer
-        // window) -- if it hasn't closed in 5s something's wrong, don't
-        // hang the Dashboard's status check forever.
-        setTimeout(() => finish(null, "UPIA /list timed out."), 5000);
+        // stdin closed so a prompting UPIA can't hang the check
+        child = spawn(upiaPath, ["/list", "all"], { windowsHide: true, stdio: ["ignore", "pipe", "pipe"] });
     } catch (err) {
         finish(null, err.message);
+        return;
     }
+    child.stdout.on("data", chunk => { stdout += chunk.toString(); });
+    child.stderr.on("data", chunk => { stderr += chunk.toString(); });
+    child.once("error", err => { log(`Could not run UPIA /list: ${err.message}`); finish(null, err.message); });
+    child.once("close", code => {
+        if (code !== 0) {
+            log(`UPIA /list all exited with code ${code}${stderr ? ` - ${stderr.trim()}` : ""}.`);
+            finish(null, stderr.trim() || `exit code ${code}`);
+            return;
+        }
+        // The raw output is logged: it is the only way to see the real format.
+        log(`UPIA /list all output:\n${stdout.trim() || "(empty)"}`);
+        const found = findPluginInList(stdout, pluginId, names);
+        finish(found.installed, null, { version: found.version });
+    });
+    timer = setTimeout(() => {
+        try { child.kill(); } catch {}
+        log("UPIA /list all timed out.");
+        finish(null, "UPIA /list timed out.");
+    }, LIST_TIMEOUT_MS);
 }
 
-module.exports = { getUpiaPath, installCcx, removeCcx, listInstalled };
+module.exports = { getUpiaPath, listInstalled, readCcxVersion, findPluginInList };

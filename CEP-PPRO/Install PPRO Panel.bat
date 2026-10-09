@@ -70,6 +70,14 @@ if not exist "%DEST%\CSXS\manifest.xml" (
     exit /b 1
 )
 
+REM Tell the panel where App\incoming is (it can't know - it's installed
+REM somewhere else entirely). The panel reads this on start-up when it has no
+REM folder remembered yet. (No parenthesised block: paths may contain "(".)
+if not exist "%SRC%..\App" goto :skip_incoming_hint
+if not exist "%APPDATA%\Spidx Uploader" mkdir "%APPDATA%\Spidx Uploader" >nul 2>&1
+for %%I in ("%SRC%..\App\incoming") do > "%APPDATA%\Spidx Uploader\incoming-folder.txt" echo %%~fI
+:skip_incoming_hint
+
 echo.
 echo  Done. Start Premiere Pro and open:
 echo      Window ^> Extensions ^> Spidx Uploader

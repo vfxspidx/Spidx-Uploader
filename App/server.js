@@ -36,6 +36,10 @@ const LAST_UPLOAD  = path.join(APP_DIR, "last-upload.json");
 const BATCH_CONFIG_FILE     = path.join(INCOMING, ".batch-config.json");
 const BATCH_STATUS_FILE     = path.join(INCOMING, ".batch-status.json");
 const BATCH_FORCE_SEND      = path.join(INCOMING, ".batch-force-send");
+// A panel / the Dashboard / the global shortcut asks the running helper to switch client preset by dropping
+// {"id":..,"name":..} here; the answer ({"id","ok","message"}) comes back in the result file.
+const PRESET_REQUEST_FILE   = path.join(INCOMING, ".preset-request.json");
+const PRESET_RESULT_FILE    = path.join(INCOMING, ".preset-result.json");
 const BATCH_CANCEL          = path.join(INCOMING, ".batch-cancel");
 const ENGINE_STATUS_FILE    = path.join(INCOMING, ".engine-status.json");
 const DEFAULT_PRESET_FILE   = path.join(INCOMING, ".default-camera-raw-preset.json");
@@ -63,6 +67,15 @@ const HEARTBEAT_MS     = 15 * 1000;
 const MAX_PROCESSED    = 500;
 
 const DRIVE_TIERS       = new Set(["pro", "dev", "tester"]);
+const { decideIncoming } = require("./file-rules.js");
+const uploadHistory = require("./history.js");
+const presetStore = require("./presets.js");
+
+// What we know about a file that is on its way to being uploaded (by its final
+// name): which plugin it came from and whether it went through Photoshop. Only
+// used to label the upload-history entry.
+const fileMeta = new Map();
+
 const MULTI_BATCH_TIERS = new Set(["pro", "dev", "tester"]);
 // Same tier set gates the Camera Raw preset route ("Photoshop + Upload")
 // as the real enforcement point, independent of whatever the Dashboard
@@ -78,7 +91,9 @@ let playwright    = null;
 let browserLaunching = null;
 let uploading     = false;
 let config        = null;
-let currentTier   = "free";
+let currentTier   = "free";   // the RANK (free / pro / tester / dev) - what Drive, batches, PS route check
+let lastRejection = null;     // { time, file, reason } of the last file the engine refused (shown to the panels)
+let currentRoles  = ["free"]; // every role, e.g. ["pro", "spt"] - "spt" is an add-on read by the Premiere panel
 let currentDeviceLimitReached = false;
 let currentTrialDaysRemaining = null;
 let idleCloseTimer = null;
@@ -182,6 +197,8 @@ const DEFAULT_CONFIG = {
     browserIdle: { enabled: true, timeoutSeconds: 120 },
     batch:       { timeoutSeconds: 120 },
     throttle:    { enabled: false, minMs: 500, maxMs: 2000 },
+    compression: { enabled: true, targetMB: 1.5 }, // image size the helper aims for; a client preset can change it
+    activePreset: null,   // name of the last applied client preset (the presets themselves live in helper-config.json and are read by presets.js)
     cameraRawPreset: null, // { actionSet, actionName } — set by the dashboard, mirrored to the incoming folder for the UXP panel; see syncDefaultCameraRawPreset()
     dashboardTourSeen: false // set once by the Dashboard's first-run tour (POST /mark-tour-seen) — whitelisted here too, or loadConfig()'s own rewrite below would silently drop it on the very next helper restart
 };
@@ -218,6 +235,8 @@ function loadConfig() {
             if (Number.isFinite(r.throttle.minMs)) d.throttle.minMs = Math.max(0, r.throttle.minMs);
             if (Number.isFinite(r.throttle.maxMs)) d.throttle.maxMs = Math.max(0, r.throttle.maxMs);
         }
+        d.compression = presetStore.sanitizeCompression(r.compression);
+        if (typeof r.activePreset === "string" && r.activePreset.trim()) d.activePreset = r.activePreset.trim().slice(0, 60);
         if (r.cameraRawPreset && typeof r.cameraRawPreset === "object" && typeof r.cameraRawPreset.actionName === "string" && r.cameraRawPreset.actionName.trim()) {
             d.cameraRawPreset = { actionSet: String(r.cameraRawPreset.actionSet || "").slice(0, 200), actionName: String(r.cameraRawPreset.actionName).slice(0, 200) };
         }
@@ -292,6 +311,19 @@ function writeBatchStatus(status) {
     try { fs.writeFileSync(BATCH_STATUS_FILE, JSON.stringify({ ...status, updatedAt: Date.now() }), "utf8"); } catch {}
 }
 
+function presetNames() {
+    try { return presetStore.loadPresetsCached(CONFIG_FILE).presets.map(p => p.name); } catch { return []; }
+}
+
+// "Preset X (modified)": the helper's current settings no longer equal the active preset
+function activePresetIsModified() {
+    try {
+        if (!config || !config.activePreset) return false;
+        const preset = presetStore.loadPresetsCached(CONFIG_FILE).presets.find(p => p.name === config.activePreset);
+        return preset ? !presetStore.matchesConfig(preset, config) : false;
+    } catch { return false; }
+}
+
 function writeEngineStatus() {
     try {
         fs.mkdirSync(INCOMING, { recursive: true });
@@ -303,6 +335,11 @@ function writeEngineStatus() {
             message: engineMessage,
             destination: config ? config.destination : null,
             tier: currentTier,
+            roles: currentRoles,
+            lastRejection,
+            presets: presetNames(),
+            activePreset: config ? (config.activePreset || null) : null,
+            activePresetModified: activePresetIsModified(),
             deviceLimitReached: currentDeviceLimitReached,
             trialDaysRemaining: currentTrialDaysRemaining,
             updatedAt: Date.now()
@@ -349,6 +386,7 @@ function persistQueue() {
 /* ---------------------------------------------------------------------- */
 
 function compressInWorker(filePath) {
+    const compression = presetStore.sanitizeCompression(config && config.compression);
     return new Promise((resolve, reject) => {
         const worker = new Worker(COMPRESS_WORKER_FILE);
         worker.on("message", result => {
@@ -357,7 +395,7 @@ function compressInWorker(filePath) {
             else reject(new Error(result.message || "Compression failed in worker."));
         });
         worker.on("error", err => { worker.terminate(); reject(err); });
-        worker.postMessage({ filePath });
+        worker.postMessage({ filePath, options: { enabled: compression.enabled, targetBytes: Math.round(compression.targetMB * 1024 * 1024) } });
     });
 }
 
@@ -811,7 +849,7 @@ function attemptUpload(filePaths, folderName) {
 /*  Batch success / failure                                             */
 /* ---------------------------------------------------------------------- */
 
-function finalizeBatchSuccess(filePaths, linksByFile) {
+function finalizeBatchSuccess(filePaths, linksByFile, folderName) {
     const rawLinks = filePaths.map(f => linksByFile.get(path.basename(f))).filter(Boolean);
     const links = [...new Set(rawLinks)];
     const clipText = links.join("\n");
@@ -825,6 +863,18 @@ function finalizeBatchSuccess(filePaths, linksByFile) {
     }
 
     saveLastUpload(links, filePaths.map(f => path.basename(f)));
+
+    const metas = filePaths.map(f => fileMeta.get(path.basename(f)) || {});
+    uploadHistory.append({
+        files: filePaths.map(f => path.basename(f)),
+        links,
+        destination: config.destination,
+        folder: folderName || null,
+        source: metas.map(m => m.source).find(Boolean) || null,
+        viaPhotoshop: metas.some(m => m.ps),
+        preset: config.activePreset || null
+    });
+    for (const f of filePaths) fileMeta.delete(path.basename(f));
 
     showNotification(
         "Spidx Uploader",
@@ -887,7 +937,7 @@ async function processBatch(filePaths, folderName) {
     }
 
     if (remaining.length === 0) {
-        finalizeBatchSuccess(filePaths, linksByFile);
+        finalizeBatchSuccess(filePaths, linksByFile, folderName);
         return;
     }
 
@@ -999,6 +1049,41 @@ function checkForceSendMarker() {
     }
 }
 
+// ---- client presets -------------------------------------------------------
+// Applies a preset to the RUNNING helper (no restart) and to helper-config.json.
+function applyPresetLive(name) {
+    const { presets } = presetStore.loadPresets(CONFIG_FILE);
+    const preset = presets.find(p => p.name.toLowerCase() === String(name || "").trim().toLowerCase());
+    if (!preset) return { ok: false, message: `There is no preset called "${name}".` };
+
+    presetStore.applyPresetToConfigObject(config, preset);
+    try { presetStore.applyPresetToFile(CONFIG_FILE, preset); }
+    catch (err) { log(`Preset "${preset.name}" applied in memory, but saving helper-config.json failed: ${err.message}`); }
+    syncDefaultCameraRawPreset();
+
+    const warnings = [];
+    if (preset.destination === "drive" && !tierAllowsDrive(currentTier)) warnings.push("Google Drive needs a Pro plan - uploads use WorkUpload until then.");
+    if (preset.cameraRawPreset && !tierAllowsProFeatures(currentTier)) warnings.push("Photoshop + Upload needs a Pro plan.");
+
+    log(`Client preset "${preset.name}" applied (${presetStore.describePreset(preset).join(", ")}).`);
+    logEvent("preset", "ok", { name: preset.name, destination: preset.destination });
+    writeEngineStatus();
+    return { ok: true, name: preset.name, warnings, message: warnings.length ? warnings.join(" ") : "" };
+}
+
+function checkPresetRequest() {
+    if (!fs.existsSync(PRESET_REQUEST_FILE)) return;
+    let request = null;
+    try { request = JSON.parse(fs.readFileSync(PRESET_REQUEST_FILE, "utf8")); } catch {}
+    try { fs.unlinkSync(PRESET_REQUEST_FILE); } catch {}
+    if (!request || !request.name) return;
+
+    let result;
+    try { result = applyPresetLive(request.name); }
+    catch (err) { result = { ok: false, message: err.message }; }
+    try { fs.writeFileSync(PRESET_RESULT_FILE, JSON.stringify({ id: request.id || null, ...result, time: Date.now() }), "utf8"); } catch {}
+}
+
 function checkCancelMarker() {
     if (!fs.existsSync(BATCH_CANCEL)) return;
     try { fs.unlinkSync(BATCH_CANCEL); } catch {}
@@ -1050,6 +1135,7 @@ async function routeThroughPhotoshop(fullPath) {
         logEvent("camera_raw", "ok", { file: name, output: outName });
         rememberProcessed(outName);
         saveState();
+        fileMeta.set(outName, { ...(fileMeta.get(name) || {}), ps: true });
         addFileToBatch(result.outputPath);
     } else {
         log(`Camera Raw step failed for ${name}: ${result.error} — uploading the original frame instead.`);
@@ -1078,12 +1164,30 @@ function seedExistingFiles() {
     }
 }
 
+// A refused file is moved to incoming\\rejected (not deleted - the user can still
+// take it) and the user is told why. Remembered as processed so it isn't retried.
+function rejectIncoming(fullPath, name, reason) {
+    log(`Refused ${name}: ${reason}`);
+    logEvent("incoming_gate", "rejected", { file: name, reason });
+    lastRejection = { time: Date.now(), file: name, reason };
+    try {
+        const dir = path.join(INCOMING, "rejected");
+        fs.mkdirSync(dir, { recursive: true });
+        fs.renameSync(fullPath, path.join(dir, name));
+    } catch (err) {
+        log(`Could not move ${name} to the rejected folder: ${err.message}`);
+    }
+    showNotification("Spidx Uploader - Pro feature", reason);
+    writeEngineStatus();
+}
+
 function scan() {
     let files = [];
     try { files = fs.readdirSync(INCOMING); } catch { return; }
 
     checkCancelMarker();
     checkForceSendMarker();
+    checkPresetRequest();
 
     for (const name of files) {
         if (!isJpg(name) || isCompressedByproduct(name) || processed.has(name) || pending.has(name)) continue;
@@ -1104,10 +1208,32 @@ function scan() {
                 rememberProcessed(name);
                 saveState();
 
-                if (needsCameraRaw(name)) {
-                    routeThroughPhotoshop(full);
+                // VEGAS files carry a ".vg" tag: refuse them without Pro, strip the tag otherwise.
+                const verdict = decideIncoming(name, tierAllowsProFeatures(currentTier));
+                if (verdict.action === "reject") {
+                    rejectIncoming(full, name, verdict.reason);
+                    return;
+                }
+                let target = full;
+                if (verdict.cleanName !== name) {
+                    const cleanFull = path.join(INCOMING, verdict.cleanName);
+                    rememberProcessed(verdict.cleanName);
+                    saveState();
+                    try {
+                        if (fs.existsSync(cleanFull)) fs.unlinkSync(cleanFull);
+                        fs.renameSync(full, cleanFull);
+                        target = cleanFull;
+                    } catch (err) {
+                        log(`Could not strip the VEGAS tag from ${name}: ${err.message} - uploading it as is.`);
+                    }
+                }
+                const targetName = path.basename(target);
+                fileMeta.set(targetName, { source: verdict.source, ps: false });
+
+                if (needsCameraRaw(targetName)) {
+                    routeThroughPhotoshop(target);
                 } else {
-                    addFileToBatch(full);
+                    addFileToBatch(target);
                 }
             } catch {}
         }, 700);
@@ -1199,6 +1325,7 @@ async function main() {
     try {
         const licenseResult = await checkGoogleSignInAndTier();
         currentTier = licenseResult.tier;
+        currentRoles = Array.isArray(licenseResult.roles) && licenseResult.roles.length ? licenseResult.roles : [licenseResult.tier];
         currentDeviceLimitReached = licenseResult.deviceLimitReached;
         currentTrialDaysRemaining = licenseResult.trialDaysRemaining || null;
     } catch (error) {
@@ -1210,6 +1337,7 @@ async function main() {
         log(`Google sign-in / tier check failed: ${error.message} — continuing on free.`);
         setEngineState("error", `Sign-in failed: ${error.message}`);
         currentTier = "free";
+        currentRoles = ["free"];
         currentDeviceLimitReached = false;
         currentTrialDaysRemaining = null;
         config.destination = "workupload";

@@ -1,6 +1,12 @@
 Spidx Uploader — VEGAS Pro plugin
 =================================
 
+PRO ONLY (v1.1.0): uploading from VEGAS needs a Pro plan. The panel locks its Upload buttons
+for Free/other plans, and every file is tagged ".vg" (spidx_123.vg.png) so the helper itself
+refuses it for a non-Pro licence (the refused file is moved to incoming\rejected). The tag is
+removed again before uploading. An OLD plugin version (no tag) is not recognised by the helper -
+update the plugin from the Dashboard.
+
 EASIEST WAY (no manual building):
     - Setup wizard, step "Connect your panels" -> "Install the VEGAS Pro plugin", or
     - Dashboard -> Account -> Plugins -> VEGAS Pro plugin -> Install / Update / Uninstall, or

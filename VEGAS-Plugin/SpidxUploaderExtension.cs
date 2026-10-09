@@ -17,8 +17,8 @@
  *  reproduced from the real values, not guessed.
  *
  *  Two upload routes, matching server.js's needsCameraRaw():
- *    - "Upload"             -> plain "<stamp>.png"    -> uploads direct
- *    - "Photoshop + Upload" -> "<stamp>.ps.png"        -> routed through
+ *    - "Upload"             -> "<stamp>.vg.png"       -> uploads direct
+ *    - "Photoshop + Upload" -> "<stamp>.vg.ps.png"    -> routed through
  *      the Dashboard-configured Camera Raw Action first (requires
  *      Photoshop already open). Disabled until a preset actually exists.
  *
@@ -69,6 +69,11 @@ public class SpidxUploaderModule : ICustomCommandModule
     private const int PollIntervalMs = 1500;
     private const long EngineStaleMs = 2 * 60 * 1000;
     private static readonly string[] MultiBatchTiers = { "pro", "dev", "tester" };
+
+    // VEGAS Pro uploads are a Pro feature. The panel locks its buttons for a known
+    // non-Pro plan, AND every file is tagged ".vg" so the helper (engine) refuses it
+    // for a non-Pro licence even if this check is bypassed.
+    private static readonly string[] ProTiers = { "pro", "dev", "tester" };
 
     private Vegas myVegas;
     private CustomCommand myViewCommand;
@@ -938,6 +943,31 @@ public class SpidxUploaderModule : ICustomCommandModule
         return myCurrentTier != null && MultiBatchTiers.Contains(myCurrentTier);
     }
 
+    // Locked only when the plan is KNOWN and is not a Pro one. While the plan is still
+    // unknown (helper not running yet) the frame may be saved - the helper decides.
+    private bool PlanLocked()
+    {
+        return myCurrentTier != null && !ProTiers.Contains(myCurrentTier);
+    }
+
+    private void ApplyPlanLock()
+    {
+        if (mySendButton == null || myPsUploadButton == null) return;
+        if (PlanLocked())
+        {
+            mySendButton.Enabled = false;
+            myPsUploadButton.Enabled = false;
+            SetCard("VEGAS Pro is a Pro feature",
+                "Your plan is " + myCurrentTier.ToUpperInvariant() + ". Upgrade to Pro to upload from VEGAS Pro.",
+                CardState.Error);
+        }
+        else
+        {
+            if (!myBusy) mySendButton.Enabled = true;
+            UpdateRouteLine();
+        }
+    }
+
     private void UpdateFolderNameVisibility()
     {
         bool show = myCurrentDestination == "drive" && mySelectedBatchCount > 1;
@@ -1040,6 +1070,11 @@ public class SpidxUploaderModule : ICustomCommandModule
     private void PerformUpload(bool viaPhotoshop)
     {
         if (myBusy) return;
+        if (PlanLocked())
+        {
+            ApplyPlanLock();
+            return;
+        }
 
         SpidxButton activeButton = viaPhotoshop ? myPsUploadButton : mySendButton;
         SpidxButton otherButton = viaPhotoshop ? mySendButton : myPsUploadButton;
@@ -1070,7 +1105,7 @@ public class SpidxUploaderModule : ICustomCommandModule
             SaveCurrentFrame(myVegas, folder, viaPhotoshop, out savedName, out savedBytes);
 
             myProgressBar.SetPercent(100, true);
-            ShowFileRow(savedName, savedBytes);
+            ShowFileRow(savedName.Replace(".vg.", "."), savedBytes);
 
             if (mySelectedBatchCount > 1)
             {
@@ -1111,7 +1146,9 @@ public class SpidxUploaderModule : ICustomCommandModule
     private void SaveCurrentFrame(Vegas vegas, string incomingFolder, bool viaPhotoshop, out string finalName, out long bytes)
     {
         string stamp = "spidx_" + DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-        finalName = viaPhotoshop ? (stamp + ".ps.png") : (stamp + ".png");
+        // ".vg" tags the file as coming from VEGAS (Pro only - see ProTiers); the helper
+        // strips it again before uploading, so the uploaded name stays clean.
+        finalName = viaPhotoshop ? (stamp + ".vg.ps.png") : (stamp + ".vg.png");
         string partPath = Path.Combine(incomingFolder, stamp + ".pngpart");
         string finalPath = Path.Combine(incomingFolder, finalName);
 
@@ -1185,6 +1222,54 @@ public class SpidxUploaderModule : ICustomCommandModule
         ApplyEngineStatus(ReadJson(Path.Combine(myIncomingFolder, EngineStatusName)));
         ApplyBatchStatus(ReadJson(Path.Combine(myIncomingFolder, BatchStatusName)));
         UpdateRouteLine();
+        CheckCaptureRequest();
+    }
+
+    /* ------------------------------------------------------------------ *
+     *  Global shortcut: SpidxHotkey.exe (started by the tray app) writes
+     *  .capture-request.json when the shortcut is pressed while VEGAS is in
+     *  front. We answer in .capture-ack.json FIRST (the key press gets its
+     *  feedback even though saving the frame takes a moment), then do exactly
+     *  what the Upload / Photoshop + Upload button does.
+     * ------------------------------------------------------------------ */
+    private string myLastCaptureId = "";
+
+    private void AnswerCapture(string id, bool ok, string message)
+    {
+        try
+        {
+            string json = "{\"id\":\"" + JsonEscape(id) + "\",\"app\":\"vegas\",\"ok\":" + (ok ? "true" : "false") +
+                          ",\"message\":\"" + JsonEscape(message ?? "") + "\"}";
+            File.WriteAllText(Path.Combine(myIncomingFolder, ".capture-ack.json"), json);
+        }
+        catch { }
+    }
+
+    private static string JsonEscape(string s)
+    {
+        return (s ?? "").Replace("\\", "\\\\").Replace("\"", "\\\"").Replace("\r", "\\r").Replace("\n", "\\n");
+    }
+
+    private void CheckCaptureRequest()
+    {
+        Dictionary<string, object> request = ReadJson(Path.Combine(myIncomingFolder, ".capture-request.json"));
+        if (request == null) return;
+        string id = GetString(request, "id");
+        if (string.IsNullOrEmpty(id) || id == myLastCaptureId || GetString(request, "app") != "vegas") return;
+        myLastCaptureId = id;
+
+        long ageMs = Math.Abs(DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() - GetLong(request, "time"));
+        if (ageMs > 15000) return;                       // a key press from before this panel was open
+
+        bool viaPhotoshop = GetString(request, "route") == "ps";
+        string problem = null;
+        if (myBusy) problem = "The Spidx panel is still busy with the previous upload.";
+        else if (PlanLocked()) problem = "Uploading from VEGAS Pro needs a Pro plan.";
+        else if (viaPhotoshop && !myPsUploadButton.Enabled) problem = "No Camera Raw Action is set - choose one in the Dashboard first.";
+        if (problem != null) { AnswerCapture(id, false, problem); return; }
+
+        AnswerCapture(id, true, "");
+        PerformUpload(viaPhotoshop);
     }
 
     private void ApplyEngineStatus(Dictionary<string, object> status)
@@ -1220,6 +1305,7 @@ public class SpidxUploaderModule : ICustomCommandModule
             myCurrentTier = tier;
             if (!TierAllowsMultiBatch() && mySelectedBatchCount > 1) SetSelectedBatchCount(1, true);
             SetBatchControlsLocked(false);
+            ApplyPlanLock();
         }
 
         if (!string.IsNullOrEmpty(tier))
@@ -1283,7 +1369,7 @@ public class SpidxUploaderModule : ICustomCommandModule
         string actionName = preset != null ? GetString(preset, "actionName") : null;
         bool hasPreset = !string.IsNullOrEmpty(actionName);
 
-        myPsUploadButton.Enabled = !myBusy && hasPreset;
+        myPsUploadButton.Enabled = !myBusy && hasPreset && !PlanLocked();
         myRouteLineLabel.Text = hasPreset
             ? "Photoshop + Upload runs \u201c" + actionName + "\u201d \u2014 requires Photoshop already open."
             : "Set a Camera Raw Action in the Dashboard to enable Photoshop + Upload.";

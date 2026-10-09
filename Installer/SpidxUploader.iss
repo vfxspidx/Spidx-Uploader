@@ -29,7 +29,7 @@
 ; ============================================================================
 
 #define AppName        "Spidx Uploader"
-#define AppVersion     "2.7.2"
+#define AppVersion     "2.8.0"
 #define AppPublisher   "Spidx"
 #define AppExeVbs      "Spidx Uploader.vbs"
 #define CepExtIdAE     "com.spidx.uploader.ae"
@@ -41,6 +41,9 @@
 ; UPIA's /remove command (used on uninstall) identifies the plugin by
 ; this id, not by file path. Confirmed from the manifest: com.spidx.workupload
 #define UxpPluginId    "com.spidx.workupload"
+; The "name" field of the same manifest. Adobe documents UPIA's /remove in terms
+; of the plugin NAME, so uninstall tries both (a miss on one is harmless).
+#define UxpPluginName  "Spidx Uploader"
 
 [Setup]
 AppId={{9F1C4E61-2B4A-4F4E-9E29-2C0E1C7B5A31}
@@ -78,10 +81,14 @@ Name: "launchafter";  Description: "Start Spidx Uploader when setup finishes"; F
 [Files]
 ; ---- helper / engine ----
 Source: "..\App\*";    DestDir: "{app}\App";    Flags: ignoreversion recursesubdirs createallsubdirs; \
-    Excludes: "node_modules\*,incoming\*,browser-profile\*,helper.log,helper-events.jsonl,queue.json,helper-state.json,license-cache.json,google-token.json,last-upload.json,device-id.json,.pending-license-code,.tray.pid,diagnostics\*,update-cache.json,plugin-updates-cache.json"
+    Excludes: "node_modules\*,incoming\*,browser-profile\*,helper.log,helper-events.jsonl,queue.json,helper-state.json,license-cache.json,google-token.json,last-upload.json,device-id.json,.pending-license-code,.tray.pid,diagnostics\*,update-cache.json,plugin-updates-cache.json,consent.json,upload-history.json"
 ; ---- Photoshop (UXP) panel: ONLY the packaged .ccx ships -- the raw UXP
 ; source folder is intentionally left out of the installer entirely.
-Source: "..\UXP\{#UxpCcxFile}"; DestDir: "{app}\UXP"; Flags: ignoreversion skipifsourcedoesntexist; Tasks: pspanel
+; Always shipped (not only with the "pspanel" task) so the Dashboard / wizard can install the
+; panel later with the elevated scripts next to it.
+Source: "..\UXP\{#UxpCcxFile}"; DestDir: "{app}\UXP"; Flags: ignoreversion skipifsourcedoesntexist
+Source: "..\UXP\Install PS Panel.bat"; DestDir: "{app}\UXP"; Flags: ignoreversion skipifsourcedoesntexist
+Source: "..\UXP\Uninstall PS Panel.bat"; DestDir: "{app}\UXP"; Flags: ignoreversion skipifsourcedoesntexist
 ; ---- After Effects (CEP) panel: kept in {app} for reference ... ----
 Source: "..\CEP-AE\*"; DestDir: "{app}\CEP-AE"; Flags: ignoreversion recursesubdirs createallsubdirs
 ; ---- ... and installed straight into the CEP extensions folder ----
@@ -96,6 +103,12 @@ Source: "..\CEP-PPRO\client\*";   DestDir: "{userappdata}\Adobe\CEP\extensions\{
 Source: "..\CEP-PPRO\host\*";     DestDir: "{userappdata}\Adobe\CEP\extensions\{#CepExtIdPPro}\host";     Flags: ignoreversion recursesubdirs createallsubdirs; Tasks: pprpanel
 Source: "..\CEP-PPRO\icons\*";    DestDir: "{userappdata}\Adobe\CEP\extensions\{#CepExtIdPPro}\icons";    Flags: ignoreversion recursesubdirs createallsubdirs; Tasks: pprpanel
 Source: "..\CEP-PPRO\presets\*";  DestDir: "{userappdata}\Adobe\CEP\extensions\{#CepExtIdPPro}\presets";  Flags: ignoreversion recursesubdirs createallsubdirs skipifsourcedoesntexist; Tasks: pprpanel
+; The MOGRT tab's bundled templates + mogrts.json. This line was missing, so a panel installed
+; by the Windows installer had NO templates (the .bat installer already copied this folder).
+Source: "..\CEP-PPRO\mogrts\*";   DestDir: "{userappdata}\Adobe\CEP\extensions\{#CepExtIdPPro}\mogrts";   Flags: ignoreversion recursesubdirs createallsubdirs skipifsourcedoesntexist; Tasks: pprpanel
+; ---- Global shortcut: only the C# SOURCE ships; App\hotkey.js builds SpidxHotkey.exe with csc.exe on first use. ----
+Source: "..\Hotkey\*.cs"; DestDir: "{app}\Hotkey"; Flags: ignoreversion
+Source: "..\Hotkey\README.txt"; DestDir: "{app}\Hotkey"; Flags: ignoreversion skipifsourcedoesntexist
 ; ---- VEGAS Pro plugin: the C# source + install scripts ship in {app}; the
 ; "vegaspanel" task below (or the wizard / Dashboard) builds and installs the
 ; .dll against whatever VEGAS the user has, so there is no prebuilt binary. ----
@@ -104,6 +117,7 @@ Source: "..\VEGAS-Plugin\*"; DestDir: "{app}\VEGAS-Plugin"; Flags: ignoreversion
 Source: "..\{#AppExeVbs}";                DestDir: "{app}"; Flags: ignoreversion
 Source: "..\Install Desktop Shortcut.vbs"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
 Source: "..\README.txt";                   DestDir: "{app}"; Flags: ignoreversion isreadme skipifsourcedoesntexist
+Source: "..\THIRD-PARTY-NOTICES.txt";      DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
 
 [Dirs]
 ; The helper watches this; all three panels export into it. Created up
@@ -169,6 +183,8 @@ Filename: "{app}\App\start-tray.bat"; WorkingDir: "{app}\App"; \
 ; through UPIA. Uses the plugin id from manifest.json, not a file path.
 Filename: "{code:GetUPIAPath}"; Parameters: "/remove {#UxpPluginId}"; \
     Flags: runhidden skipifdoesntexist; RunOnceId: "RemoveUxpPlugin"
+Filename: "{code:GetUPIAPath}"; Parameters: "/remove ""{#UxpPluginName}"""; \
+    Flags: runhidden skipifdoesntexist; RunOnceId: "RemoveUxpPluginByName"
 
 ; Remove the VEGAS plugin .dll too (no-op when it was never installed).
 Filename: "{app}\VEGAS-Plugin\Uninstall VEGAS Plugin.bat"; Parameters: "/silent"; WorkingDir: "{app}\VEGAS-Plugin"; \
@@ -181,6 +197,8 @@ Type: filesandordirs; Name: "{app}\App\browser-profile"
 Type: filesandordirs; Name: "{app}\App\diagnostics"
 Type: files;          Name: "{app}\App\plugin-updates-cache.json"
 Type: files;          Name: "{app}\App\update-cache.json"
+Type: files;          Name: "{app}\App\upload-history.json"
+Type: files;          Name: "{app}\Hotkey\SpidxHotkey.exe"
 Type: filesandordirs; Name: "{userappdata}\Adobe\CEP\extensions\{#CepExtIdAE}"
 Type: filesandordirs; Name: "{userappdata}\Adobe\CEP\extensions\{#CepExtIdPPro}"
 Type: files;          Name: "{app}\App\helper.log"
@@ -269,7 +287,10 @@ end;
 // --------------------------------------------------------------------------
 procedure CloseRunningCopy();
 var
-  PidPath, PidText: String;
+  PidPath: String;
+  // LoadStringFromFile fills an AnsiString (a plain String is a "Type mismatch"
+  // in Inno Setup's Unicode compiler).
+  PidText: AnsiString;
   Pid, ResultCode: Integer;
 begin
   PidPath := ExpandConstant('{app}\App\.tray.pid');
@@ -279,7 +300,7 @@ begin
   if not LoadStringFromFile(PidPath, PidText) then
     Exit;
 
-  Pid := StrToIntDef(Trim(PidText), 0);
+  Pid := StrToIntDef(Trim(String(PidText)), 0);
   if Pid <= 0 then
     Exit;
 

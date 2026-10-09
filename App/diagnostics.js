@@ -168,6 +168,26 @@ function cepDebugModeEnabled() {
     return false;
 }
 
+// Global shortcut: is the small background program built, running and holding its keys?
+function shortcutCheck() {
+    const hotkey = require("./hotkey.js");
+    const label = "Global shortcut";
+    const cfg = hotkey.readHotkeyConfig();
+    if (!cfg.enabled) return check("hotkey", label, "info", "turned off in Dashboard > Settings");
+    if (process.platform !== "win32") return check("hotkey", label, "info", "Windows only");
+
+    let status = null;
+    try { status = JSON.parse(fs.readFileSync(path.join(INCOMING_DIR, ".hotkey-status.json"), "utf8")); } catch {}
+    const fresh = !!(status && status.updatedAt && Date.now() - status.updatedAt < 15000);   // the program rewrites it every 5 s
+    const state = hotkey.getState();
+
+    if (state.lastError) return check("hotkey", label, "fail", state.lastError);
+    if (fresh && status.error) return check("hotkey", label, "fail", status.error + " Pick other keys in Dashboard > Settings > Global shortcut.");
+    if (fresh) return check("hotkey", label, "ok", "active: " + status.send.combo + " = Upload, " + status.sendPs.combo + " = Photoshop + Upload (needs the Spidx panel open in that program)");
+    if (!state.built) return check("hotkey", label, "warn", "not built yet - it is built (a few seconds) when the tray app starts; if this stays, the Windows C# compiler (csc.exe) may be missing");
+    return check("hotkey", label, "warn", "the shortcut program is not running - restart Spidx Uploader from the tray");
+}
+
 const LOG_ERROR_PATTERN = /Uncaught error|Unhandled rejection|Helper exited \(code [1-9]|Failed to start helper|keeps crashing|Startup failed/;
 
 async function runSelfTest() {
@@ -277,6 +297,13 @@ async function runSelfTest() {
     safe("hostPpro", "Premiere Pro panel", () => check("hostPpro", "Premiere Pro panel", "info", hostLine("PPro", hosts.ppro)));
     safe("hostVegas", "VEGAS Pro plugin", () => check("hostVegas", "VEGAS Pro plugin", "info", hostLine("VEGAS", hosts.vegas)));
 
+    safe("hostPs", "Photoshop panel installer (Creative Cloud)", () => {
+        const upiaPath = require("./upia.js").getUpiaPath();
+        return upiaPath
+            ? check("hostPs", "Photoshop panel installer (Creative Cloud)", "ok", "found - the Photoshop panel can be installed from the Dashboard")
+            : check("hostPs", "Photoshop panel installer (Creative Cloud)", "warn", "Creative Cloud desktop app not found - it is what installs the Photoshop panel (double-clicking the .ccx in the UXP folder also works)");
+    });
+
     safe("cepDebug", "Adobe panels allowed (PlayerDebugMode)", () => {
         if (!hosts.ae.installedVersion && !hosts.ppro.installedVersion) return check("cepDebug", "Adobe panels allowed (PlayerDebugMode)", "info", "no Adobe panel installed");
         const enabled = cepDebugModeEnabled();
@@ -285,6 +312,8 @@ async function runSelfTest() {
             ? check("cepDebug", "Adobe panels allowed (PlayerDebugMode)", "ok", "enabled")
             : check("cepDebug", "Adobe panels allowed (PlayerDebugMode)", "warn", "off - unsigned Adobe panels won't show up; reinstall the AE/PPro panel from the Dashboard");
     });
+
+    safe("hotkey", "Global shortcut", shortcutCheck);
 
     safe("logErrors", "Recent errors in the log", () => {
         const text = tailText(LOG_FILE, 300 * 1024);
@@ -387,4 +416,4 @@ async function buildDiagnostics(log = () => {}) {
     }
 }
 
-module.exports = { runSelfTest, formatReport, buildDiagnostics, redact, DIAG_DIR };
+module.exports = { runSelfTest, formatReport, buildDiagnostics, redact, DIAG_DIR, shortcutCheck };

@@ -1,10 +1,10 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <ExtensionManifest Version="7.0" ExtensionBundleId="com.spidx.uploader.ae"
-                   ExtensionBundleVersion="2.4.0"
+                   ExtensionBundleVersion="2.8.0"
                    ExtensionBundleName="Spidx Uploader"
                    xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
     <ExtensionList>
-        <Extension Id="com.spidx.uploader.ae.panel" Version="2.4.0"/>
+        <Extension Id="com.spidx.uploader.ae.panel" Version="2.8.0"/>
     </ExtensionList>
 
     <ExecutionEnvironment>

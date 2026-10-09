@@ -35,8 +35,11 @@ const VEGAS_INSTALLER = path.join(APP_DIR, "..", "VEGAS-Plugin", "Install VEGAS 
 // Photoshop (UXP) panel: a single packaged .ccx installed through Adobe's
 // UPIA tool -- see upia.js. Filename/id must match Installer\SpidxUploader.iss.
 const PS_INSTALLER_CCX = path.join(APP_DIR, "..", "UXP", "com.spidx.workupload_PS.ccx");
+// Elevated script that runs Adobe's UPIA as Administrator (see UXP\Install PS Panel.bat).
+const PS_INSTALLER_BAT = path.join(APP_DIR, "..", "UXP", "Install PS Panel.bat");
 const UXP_PLUGIN_ID = "com.spidx.workupload"; // must match the .ccx's manifest.json "id"
 const upia = require("./upia.js");
+const legal = require("./legal.js");
 const DRIVE_TIERS = new Set(["pro", "dev", "tester"]);
 
 // What the wizard already knows before anything is clicked: whether a
@@ -45,13 +48,24 @@ const DRIVE_TIERS = new Set(["pro", "dev", "tester"]);
 // google-auth — touching that would kick off a real OAuth round trip
 // just to render step 1.
 function readKnownAccount() {
-    if (!fs.existsSync(GOOGLE_TOKEN_FILE)) return { email: null, tier: null };
+    if (!fs.existsSync(GOOGLE_TOKEN_FILE)) return { email: null, tier: null, roles: [] };
     try {
         const cache = JSON.parse(fs.readFileSync(LICENSE_CACHE_FILE, "utf8"));
-        return { email: cache.email || null, tier: cache.tier || null };
+        // The cache holds the SIGNED string ("pro", "spt", "pro+spt"). Turn it into the rank + the roles;
+        // comparing the raw string with the rank list made a "pro+spt" licence look like Free.
+        const license = require("./license.js");
+        const roles = cache.tier ? license.parseRoles(cache.tier) : [];
+        return { email: cache.email || null, tier: cache.tier ? license.primaryTier(roles) : null, roles };
     } catch {
-        return { email: null, tier: null };
+        return { email: null, tier: null, roles: [] };
     }
+}
+
+// The Premiere Pro panel may be installed with a Pro-level rank OR with the "spt" role (the Thumbnail Pack's
+// MOGRT tab lives in that panel). An unknown plan (nothing cached yet) is allowed, as before.
+function pproAllowed(tier, roles) {
+    if (!tier) return true;
+    return DRIVE_TIERS.has(tier) || (Array.isArray(roles) && roles.indexOf("spt") !== -1);
 }
 
 function openFolder(target, log) {
@@ -189,6 +203,7 @@ const WIZARD_HTML = `<!DOCTYPE html>
     .tier-chip.tier-pro { background: rgba(255,214,10,.12); color: #ffd60a; }
     .tier-chip.tier-dev { background: rgba(192,123,255,.14); color: #c07bff; }
     .tier-chip.tier-tester { background: rgba(100,210,255,.14); color: #64d2ff; }
+    .tier-chip.tier-spt { background: rgba(255,159,10,.14); color: #ff9f0a; }
 
     .steps { display: flex; gap: 6px; margin-bottom: 26px; }
     .step-dot { flex: 1; height: 4px; border-radius: 2px; background: #26262d; transition: background .3s ease; }
@@ -215,6 +230,10 @@ const WIZARD_HTML = `<!DOCTYPE html>
     .btn:hover:not(:disabled) { filter: brightness(1.12); }
     .btn:active:not(:disabled) { transform: translateY(1px); }
     .btn:disabled { opacity: .45; cursor: not-allowed; }
+    .consent { display: flex; gap: 10px; align-items: flex-start; margin: 4px 0 16px; font-size: 12.5px; line-height: 1.5; color: var(--text, #f5f5f7); cursor: pointer; }
+    .consent input { margin-top: 3px; width: 16px; height: 16px; flex-shrink: 0; accent-color: #0a84ff; cursor: pointer; }
+    .consent a { color: #64d2ff; text-decoration: none; }
+    .consent a:hover { text-decoration: underline; }
     .btn.ghost {
         background: var(--surface-2); color: var(--dim); border: 1px solid var(--line); box-shadow: none;
         font-size: 13px; padding: 11px;
@@ -354,7 +373,12 @@ const WIZARD_HTML = `<!DOCTYPE html>
     <div class="step" id="step1">
         <div class="kicker">Step 1 of 4</div>
         <h1>Sign in with Google</h1>
-        <p class="sub">This is the account your Free/Pro status is looked up for, and — if you pick Google Drive next — the Drive your uploads land in. It stays on this computer; nothing is sent anywhere else.</p>
+        <p class="sub">This is the account your Free/Pro status is looked up for, and — if you pick Google Drive next — the Drive your uploads land in. Signing in sends your Google sign-in token to the Spidx license server so it can look up your plan; the Privacy Policy lists exactly what is sent where.</p>
+
+        <label class="consent" id="consentRow">
+            <input type="checkbox" id="consentBox">
+            <span>I have read and agree to the <a href="https://spidxuploader.com/terms" target="_blank" rel="noopener noreferrer">Terms of Service</a>, the <a href="https://spidxuploader.com/eula" target="_blank" rel="noopener noreferrer">End User License Agreement</a> and the <a href="https://spidxuploader.com/privacy" target="_blank" rel="noopener noreferrer">Privacy Policy</a>.</span>
+        </label>
 
         <div class="account" id="accountBox">
             <div class="avatar" id="accountInitial">?</div>
@@ -442,7 +466,7 @@ const WIZARD_HTML = `<!DOCTYPE html>
         <div class="host-row">
             <div class="ico vegas">Vg</div>
             <div class="txt">
-                <b>VEGAS Pro <span style="color: var(--faint); font-weight: 500;">(optional)</span></b>
+                <b>VEGAS Pro <span style="color: var(--faint); font-weight: 500;">(optional, uploading from VEGAS needs a Pro plan)</span></b>
                 <span>Builds and installs a docked panel that saves the current frame as a PNG (View &gt; Extensions &gt; Spidx Uploader). VEGAS must be closed while it installs.</span>
                 <button class="mini" id="installVegasBtn">Install the VEGAS Pro plugin</button>
             </div>
@@ -464,7 +488,7 @@ const WIZARD_HTML = `<!DOCTYPE html>
 <script>
 function $(id) { return document.getElementById(id); }
 
-var state = { email: null, tier: null, driveAllowed: true, proFeaturesAllowed: true, incomingPath: "", aePanelAvailable: false };
+var state = { email: null, tier: null, driveAllowed: true, proFeaturesAllowed: true, pproAllowed: true, incomingPath: "", aePanelAvailable: false };
 var selectedDest = null;
 
 function showStep(n) {
@@ -516,9 +540,9 @@ function applyPproButtonState() {
     if (!state.pproPanelAvailable) {
         $("installPproBtn").disabled = true;
         $("installPproBtn").textContent = "Premiere Pro panel folder not found (CEP-PPRO)";
-    } else if (!state.proFeaturesAllowed) {
+    } else if (!state.pproAllowed) {
         $("installPproBtn").disabled = true;
-        $("installPproBtn").textContent = "Premiere Pro panel is a Pro feature";
+        $("installPproBtn").textContent = "Premiere Pro panel needs Pro or the Thumbnail Pack";
     } else {
         $("installPproBtn").disabled = false;
         $("installPproBtn").textContent = "Install the Premiere Pro panel";
@@ -547,9 +571,33 @@ async function loadState() {
         }
         applyPproButtonState();
         applyVegasButtonState();
+        applyConsentState(!!(data.consent && data.consent.accepted));
         if (data.email) renderAccount();
     } catch (err) {}
 }
+
+// Consent: the checkbox is what unlocks "Sign in with Google" (the server refuses /signin without it).
+function applyConsentState(accepted) {
+    $("consentBox").checked = accepted;
+    if ($("signinBtn").style.display !== "none") $("signinBtn").disabled = !accepted;
+}
+
+$("consentBox").addEventListener("change", async function () {
+    var box = $("consentBox");
+    if (!box.checked) { $("signinBtn").disabled = true; return; }   // accepting is recorded; un-ticking just re-locks the button
+    box.disabled = true;
+    try {
+        var res = await fetch("/consent", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ accepted: true }) });
+        var out = await res.json();
+        if (!out.ok) throw new Error(out.message || "failed");
+        state.consent = out.consent;
+        $("signinBtn").disabled = false;
+    } catch (err) {
+        box.checked = false;
+        setStatus("signinStatus", "Could not save your choice — try again.", "err");
+    }
+    box.disabled = false;
+});
 
 /* ---------------- step 1 ---------------- */
 $("signinBtn").addEventListener("click", async function () {
@@ -565,6 +613,7 @@ $("signinBtn").addEventListener("click", async function () {
             state.tier = data.tier;
             state.driveAllowed = data.driveAllowed;
             state.proFeaturesAllowed = data.proFeaturesAllowed;
+            state.pproAllowed = data.pproAllowed;
             renderAccount();
             applyPproButtonState();
         applyVegasButtonState();
@@ -604,6 +653,7 @@ $("wizLicenseBtn").addEventListener("click", async function () {
             state.tier = data.tier;
             state.driveAllowed = data.driveAllowed;
             state.proFeaturesAllowed = data.proFeaturesAllowed;
+            state.pproAllowed = data.pproAllowed;
             renderAccount();
             applyPproButtonState();
         applyVegasButtonState();
@@ -638,7 +688,7 @@ $("switchAccountBtn").addEventListener("click", async function () {
     $("licenseBox").classList.remove("show");
     $("haveCodeLink").style.display = "none";
     $("signinBtn").style.display = "";
-    $("signinBtn").disabled = false;
+    $("signinBtn").disabled = !$("consentBox").checked;
     $("continue1Btn").style.display = "none";
     $("switchAccountBtn").style.display = "none";
     setStatus("signinStatus", "Saved login cleared — sign in with the account you want.");
@@ -754,7 +804,7 @@ $("installPproBtn").addEventListener("click", async function () {
 $("installPsBtn").addEventListener("click", async function () {
     var btn = $("installPsBtn");
     btn.disabled = true;
-    setStatus("hostsStatus", "Installing the Photoshop panel...");
+    setStatus("hostsStatus", "Opening the Photoshop panel installer...");
     try {
         var res = await fetch("/install-ps-panel", { method: "POST" });
         var data = await res.json();
@@ -762,8 +812,8 @@ $("installPsBtn").addEventListener("click", async function () {
             setStatus("hostsStatus", data.message || "Could not install the Photoshop panel.", "err");
             btn.disabled = false;
         } else {
-            btn.textContent = "Installed";
-            setStatus("hostsStatus", "Photoshop panel installed. Restart Photoshop to see it.", "ok");
+            btn.textContent = "Installer opened";
+            setStatus("hostsStatus", "Allow the administrator prompt and follow the console window; when it finishes, restart Photoshop to see the panel.", "ok");
         }
     } catch (err) {
         setStatus("hostsStatus", "Could not install the Photoshop panel.", "err");
@@ -824,22 +874,48 @@ function runSetupWizard(log = console.log) {
                     email: known.email,
                     tier: known.tier,
                     driveAllowed: known.tier ? DRIVE_TIERS.has(known.tier) : true,
-                    proFeaturesAllowed: known.tier ? DRIVE_TIERS.has(known.tier) : true, // same tier set — gates installing the PPro panel
+                    proFeaturesAllowed: known.tier ? DRIVE_TIERS.has(known.tier) : true,
+                    pproAllowed: pproAllowed(known.tier, known.roles), // Pro rank OR the "spt" role
                     incomingPath: INCOMING_DIR,
                     aePanelAvailable: fs.existsSync(AE_INSTALLER),
                     pproPanelAvailable: fs.existsSync(PPRO_INSTALLER),
                     vegasPanelAvailable: fs.existsSync(VEGAS_INSTALLER),
-                    psPanelAvailable: fs.existsSync(PS_INSTALLER_CCX),
-                    upiaAvailable: !!upia.getUpiaPath()
+                    psPanelAvailable: fs.existsSync(PS_INSTALLER_CCX) && fs.existsSync(PS_INSTALLER_BAT),
+                    upiaAvailable: !!upia.getUpiaPath(),
+                    consent: legal.consentSummary()
                 }));
                 return;
             }
 
+            if (url.pathname === "/consent" && req.method === "POST") {
+                let body = "";
+                req.on("data", chunk => { body += chunk; });
+                req.on("end", () => {
+                    try {
+                        const parsed = JSON.parse(body || "{}");
+                        if (parsed.accepted === true) legal.recordConsent(null);
+                        res.writeHead(200, { "Content-Type": "application/json" });
+                        res.end(JSON.stringify({ ok: true, consent: legal.consentSummary() }));
+                    } catch (err) {
+                        res.writeHead(200, { "Content-Type": "application/json" });
+                        res.end(JSON.stringify({ ok: false, message: err.message }));
+                    }
+                });
+                return;
+            }
+
             if (url.pathname === "/signin" && req.method === "POST") {
+                // Signing in sends data to the licence server - not without consent.
+                if (!legal.hasValidConsent()) {
+                    res.writeHead(200, { "Content-Type": "application/json" });
+                    res.end(JSON.stringify({ ok: false, message: "Please accept the Terms of Service and the Privacy Policy first." }));
+                    return;
+                }
                 (async () => {
                     try {
                         const googleAuth = require("./google-auth.js");
                         signedInEmail = await googleAuth.getUserEmail();
+                        legal.attachEmail(signedInEmail);
 
                         // Resolve the tier right here rather than only at
                         // helper start: step 2 needs to know whether Drive
@@ -847,12 +923,14 @@ function runSetupWizard(log = console.log) {
                         // it as available and silently forcing WorkUpload
                         // later would be worse than greying it out now.
                         let tier = "free";
+                        let roles = ["free"];
                         let tierChecked = false;
                         try {
                             const license = require("./license.js");
                             const idToken = await googleAuth.getIdToken();
                             const result = await license.checkTier(idToken, signedInEmail);
                             tier = result.tier;
+                            roles = result.roles || [result.tier];
                             tierChecked = true;
                         } catch (tierError) {
                             log(`Setup wizard tier check failed: ${tierError.message}`);
@@ -866,7 +944,8 @@ function runSetupWizard(log = console.log) {
                             tier,
                             tierChecked,
                             driveAllowed: DRIVE_TIERS.has(tier),
-                            proFeaturesAllowed: DRIVE_TIERS.has(tier)
+                            proFeaturesAllowed: DRIVE_TIERS.has(tier),
+                            pproAllowed: pproAllowed(tier, roles)
                         }));
                     } catch (err) {
                         log(`Setup wizard sign-in failed: ${err.message}`);
@@ -905,24 +984,30 @@ function runSetupWizard(log = console.log) {
                         // redeemLicenseCode() drops the tier cache; re-check
                         // right away so the cache is warm again and the tier
                         // reflects the 2-device rule, not just the code.
-                        let tier = result.tier;
+                        // the code's tier can be a combination ("pro+spt"): split it into rank + roles
+                        const licenseMod = require("./license.js");
+                        let roles = licenseMod.parseRoles(result.tier);
+                        let tier = licenseMod.primaryTier(roles);
                         let trialDaysRemaining = result.trialDaysRemaining;
                         try {
                             const googleAuth = require("./google-auth.js");
-                            const fresh = await require("./license.js").checkTier(await googleAuth.getIdToken(), await googleAuth.getUserEmail());
+                            const fresh = await licenseMod.checkTier(await googleAuth.getIdToken(), await googleAuth.getUserEmail());
                             tier = fresh.tier;
+                            roles = fresh.roles || [fresh.tier];
                             trialDaysRemaining = fresh.trialDaysRemaining;
                         } catch (recheckError) {
                             log(`Setup wizard: tier re-check after redeem failed: ${recheckError.message}`);
                         }
 
-                        log(`Setup wizard: license code redeemed - tier "${tier}".`);
+                        log(`Setup wizard: license code redeemed - ${roles.join("+")}.`);
                         reply({
                             ok: true,
                             tier,
+                            roles,
                             trialDaysRemaining,
                             driveAllowed: DRIVE_TIERS.has(tier),
-                            proFeaturesAllowed: DRIVE_TIERS.has(tier)
+                            proFeaturesAllowed: DRIVE_TIERS.has(tier),
+                            pproAllowed: pproAllowed(tier, roles)
                         });
                     } catch (err) {
                         reply({ ok: false, message: err.message });
@@ -971,7 +1056,7 @@ function runSetupWizard(log = console.log) {
             if (url.pathname === "/install-ppro-panel" && req.method === "POST") {
                 try {
                     const known = readKnownAccount();
-                    if (known.tier && !DRIVE_TIERS.has(known.tier)) throw new Error("The Premiere Pro panel is a Pro feature — upgrade your tier to install it.");
+                    if (!pproAllowed(known.tier, known.roles)) throw new Error("The Premiere Pro panel needs a Pro license or the Spidx Thumbnail Pack.");
                     if (!fs.existsSync(PPRO_INSTALLER)) throw new Error("CEP-PPRO\\Install PPRO Panel.bat was not found next to the App folder.");
                     log(`Setup wizard: launching Premiere Pro panel installer at "${PPRO_INSTALLER}".`);
                     spawnBatFile(PPRO_INSTALLER, log, (ok, message) => {
@@ -1002,11 +1087,12 @@ function runSetupWizard(log = console.log) {
 
             if (url.pathname === "/install-ps-panel" && req.method === "POST") {
                 try {
-                    if (!fs.existsSync(PS_INSTALLER_CCX)) throw new Error("The Photoshop panel (.ccx) was not found next to the App folder.");
+                    if (!fs.existsSync(PS_INSTALLER_BAT) || !fs.existsSync(PS_INSTALLER_CCX)) throw new Error("The Photoshop panel files (UXP folder) were not found next to the App folder.");
                     if (!upia.getUpiaPath()) throw new Error("Creative Cloud desktop app was not found — it's what installs Photoshop plugins. Install it, then try again.");
-                    upia.installCcx(PS_INSTALLER_CCX, log, (ok, message) => {
+                    log(`Setup wizard: launching Photoshop panel installer at "${PS_INSTALLER_BAT}".`);
+                    spawnBatFile(PS_INSTALLER_BAT, log, (ok, message) => {
                         res.writeHead(200, { "Content-Type": "application/json" });
-                        res.end(JSON.stringify(ok ? { ok: true } : { ok: false, message }));
+                        res.end(JSON.stringify(ok ? { ok: true } : { ok: false, message: "Windows refused to start it: " + message }));
                     });
                 } catch (err) {
                     res.writeHead(200, { "Content-Type": "application/json" });

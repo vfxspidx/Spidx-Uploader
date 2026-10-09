@@ -10,7 +10,15 @@ const DEVICE_ID_FILE = path.join(__dirname, "device-id.json");
 const CONFIG_FILE = path.join(__dirname, "helper-config.json");
 const CACHE_TTL_MS = 24 * 60 * 60 * 1000;
 const DEFAULT_TIER = "free";
-const KNOWN_TIERS = ["free", "pro", "dev", "tester"];
+// A licence is a set of ROLES, sent by the server as one signed string:
+//     "pro"        -> a rank on its own
+//     "spt"        -> the add-on only (the Premiere Pro panel's MOGRT tab)
+//     "pro+spt"    -> several roles combined (separators: + , | or spaces)
+// The ranks (free < pro < tester < dev) decide Drive, 2-3 files per upload,
+// Photoshop + Upload... exactly as before - "spt" is NOT a rank and is NOT in
+// server.js's gating sets, so for all of that a spt-only user is "free".
+const KNOWN_TIERS = ["free", "pro", "dev", "tester", "spt"];
+const RANKED_TIERS = ["dev", "tester", "pro"]; // highest first
 const LICENSE_SECRET = "03c5cc4c6626f50e054cf9a7ea2e1dc9cc0f4d7dbfafeabe9873d8aba03f0c65";
 
 function log(...args) {
@@ -124,9 +132,31 @@ function getOrCreateDeviceName() {
     return deviceName;
 }
 
+// The value exactly as the server signed it (trimmed + lower-case). The
+// signature is checked over THIS string - not over the parsed roles - so
+// "pro+spt" can't be rewritten to "pro" (or the reverse) without breaking it.
+function signedTierString(value) {
+    return String(value || "").trim().toLowerCase();
+}
+
+// "pro+spt" -> ["pro", "spt"]. Unknown words are ignored; nothing known -> ["free"].
+function parseRoles(value) {
+    const found = [];
+    for (const token of signedTierString(value).split(/[+,|\s]+/)) {
+        if (KNOWN_TIERS.includes(token) && !found.includes(token)) found.push(token);
+    }
+    const withoutFree = found.filter(role => role !== "free");
+    return withoutFree.length ? withoutFree : [DEFAULT_TIER];
+}
+
+// The rank among the roles (dev > tester > pro > free). "spt" is an add-on, not a rank.
+function primaryTier(roles) {
+    for (const rank of RANKED_TIERS) if (roles.includes(rank)) return rank;
+    return DEFAULT_TIER;
+}
+
 function normalizeTier(value) {
-    const tier = String(value || "").trim().toLowerCase();
-    return KNOWN_TIERS.includes(tier) ? tier : DEFAULT_TIER;
+    return primaryTier(parseRoles(value));
 }
 
 function computeSignature(email, tier, timestamp) {
@@ -134,6 +164,62 @@ function computeSignature(email, tier, timestamp) {
         .createHmac("sha256", LICENSE_SECRET)
         .update(`${email}|${tier}|${timestamp}`)
         .digest("hex");
+}
+
+/* ---------------------------------------------------------------------- *
+ *  Signatures: RSA (new) and HMAC (legacy)
+ *
+ *  LEGACY: HMAC-SHA256 with LICENSE_SECRET above. The secret ships inside this
+ *  file, so anyone can read it and sign any role - it only stops accidents.
+ *
+ *  RSA: the server (Apps Script) signs with a PRIVATE key that never leaves it;
+ *  this client only holds the PUBLIC key (App\license-public-key.pem) and can
+ *  verify but not forge. The server sends it as "sig2" next to an optional
+ *  "expiresAt" (ms since epoch). The signed text is exactly
+ *      email|tier|timestamp|expiresAt         (expiresAt empty when not sent)
+ *  with the signature as base64 (Utilities.computeRsaSha256Signature).
+ *
+ *  SWITCH: while no license-public-key.pem exists, the legacy signature is
+ *  accepted (nothing changes). As soon as the file is shipped, RSA is REQUIRED
+ *  and legacy signatures are refused - so deploy the server's RSA signing
+ *  first, then ship the key. Version 3.0 ships the key and drops legacy.
+ * ---------------------------------------------------------------------- */
+const PUBLIC_KEY_FILE = path.join(__dirname, "license-public-key.pem");
+
+function readPublicKey() {
+    try {
+        const pem = fs.readFileSync(PUBLIC_KEY_FILE, "utf8");
+        return /BEGIN PUBLIC KEY/.test(pem) ? pem : null;
+    } catch {
+        return null;
+    }
+}
+
+function rsaPayload(email, tier, timestamp, expiresAt) {
+    return [email, tier, timestamp, expiresAt == null ? "" : expiresAt].join("|");
+}
+
+function isValidRsaSignature(publicKey, email, tier, timestamp, expiresAt, sig2) {
+    if (!publicKey || !sig2 || !timestamp) return false;
+    try {
+        return crypto.verify("RSA-SHA256", Buffer.from(rsaPayload(email, tier, timestamp, expiresAt)), publicKey, Buffer.from(String(sig2), "base64"));
+    } catch {
+        return false;
+    }
+}
+
+// One check for a server response AND for the local cache (same fields).
+// -> { ok, method: "rsa" | "legacy", expired }
+function verifyLicense(entry) {
+    const publicKey = readPublicKey();
+    if (publicKey) {
+        // RSA required: a legacy-only or forged response is refused.
+        if (!isValidRsaSignature(publicKey, entry.email, entry.tier, entry.timestamp, entry.expiresAt, entry.sig2)) return { ok: false, method: "rsa" };
+        if (entry.expiresAt && Date.now() > Number(entry.expiresAt)) return { ok: false, method: "rsa", expired: true };
+        return { ok: true, method: "rsa" };
+    }
+    // no public key installed yet -> legacy HMAC (transition)
+    return { ok: isValidSignature(entry.email, entry.tier, entry.timestamp, entry.signature), method: "legacy" };
 }
 
 function isValidSignature(email, tier, timestamp, signature) {
@@ -151,7 +237,8 @@ const MAX_REDIRECTS = 5;
 
 function httpGetFollowingRedirects(url, redirectsLeft = MAX_REDIRECTS) {
     return new Promise((resolve, reject) => {
-        const req = https.get(url, { timeout: 10000 }, res => {
+        const lib = /^http:/i.test(url) ? require("http") : https; // plain http only ever used by tests
+        const req = lib.get(url, { timeout: 10000 }, res => {
             const status = res.statusCode || 0;
             if (status >= 300 && status < 400 && res.headers.location) {
                 res.resume();
@@ -187,11 +274,17 @@ function fetchTier(checkUrl, idToken, deviceId, deviceName) {
         const verifiedEmail = String(parsed.email || "").trim().toLowerCase();
         if (!verifiedEmail) throw new Error("Tier check response did not include a verified email.");
 
-        const tier = normalizeTier(parsed.tier);
+        const signedTier = signedTierString(parsed.tier);
 
-        if (!isValidSignature(verifiedEmail, tier, parsed.timestamp, parsed.signature)) {
-            throw new Error("Tier response failed signature verification.");
+        const verdict = verifyLicense({
+            email: verifiedEmail, tier: signedTier, timestamp: parsed.timestamp,
+            signature: parsed.signature, sig2: parsed.sig2, expiresAt: parsed.expiresAt
+        });
+        if (!verdict.ok) {
+            throw new Error(verdict.expired ? "License response has already expired." : "Tier response failed signature verification.");
         }
+        const roles = parseRoles(signedTier);
+        const tier = primaryTier(roles);
 
         // trialDaysRemaining is informational only (like deviceLimitReached)
         // — it doesn't gate anything itself. The tier value Apps Script
@@ -205,6 +298,11 @@ function fetchTier(checkUrl, idToken, deviceId, deviceName) {
         return {
             email: verifiedEmail,
             tier,
+            roles,
+            signedTier,
+            signatureMethod: verdict.method,
+            sig2: parsed.sig2 || null,
+            expiresAt: parsed.expiresAt || null,
             timestamp: parsed.timestamp,
             signature: parsed.signature,
             deviceLimitReached: !!parsed.deviceLimitReached,
@@ -229,7 +327,10 @@ async function checkTier(idToken, cacheKeyEmail) {
     const deviceName = getOrCreateDeviceName();
     const cache = loadCache();
     const cacheMatchesEmail = cache && cacheKeyEmail && cache.email === cacheKeyEmail;
-    const cacheSignatureValid = cacheMatchesEmail && isValidSignature(cache.email, cache.tier, cache.timestamp, cache.signature);
+    const cacheSignatureValid = cacheMatchesEmail && verifyLicense({
+        email: cache.email, tier: cache.tier, timestamp: cache.timestamp,
+        signature: cache.signature, sig2: cache.sig2, expiresAt: cache.expiresAt
+    }).ok;   // an expired RSA licence in the cache counts as invalid too
 
     if (cacheMatchesEmail && !cacheSignatureValid) {
         log("Local tier cache failed signature verification — ignoring it.");
@@ -243,30 +344,33 @@ async function checkTier(idToken, cacheKeyEmail) {
     // longer skips the network call on its own.
     if (!checkUrl) {
         log('No "license.checkUrl" set in helper-config.json — defaulting to free.');
-        return { tier: DEFAULT_TIER, deviceLimitReached: false, trialDaysRemaining: null };
+        return { tier: DEFAULT_TIER, roles: [DEFAULT_TIER], deviceLimitReached: false, trialDaysRemaining: null };
     }
 
     try {
         const result = await fetchTier(checkUrl, idToken, deviceId, deviceName);
         saveCache({
             email: result.email,
-            tier: result.tier,
+            tier: result.signedTier,   // the signed string (e.g. "pro+spt") - the cache signature covers exactly this
             deviceLimitReached: result.deviceLimitReached,
             trialDaysRemaining: result.trialDaysRemaining,
             timestamp: result.timestamp,
             signature: result.signature,
+            sig2: result.sig2,
+            expiresAt: result.expiresAt,
             checkedAt: Date.now()
         });
-        log(`Tier for ${result.email}: ${result.tier}${result.deviceLimitReached ? " (device limit reached)" : ""}${result.trialDaysRemaining ? ` (trial, ${result.trialDaysRemaining}d left)` : ""}`);
-        return { tier: result.tier, deviceLimitReached: result.deviceLimitReached, trialDaysRemaining: result.trialDaysRemaining };
+        log(`Tier for ${result.email}: ${result.roles.join("+")} [${result.signatureMethod} signature]${result.deviceLimitReached ? " (device limit reached)" : ""}${result.trialDaysRemaining ? ` (trial, ${result.trialDaysRemaining}d left)` : ""}`);
+        return { tier: result.tier, roles: result.roles, deviceLimitReached: result.deviceLimitReached, trialDaysRemaining: result.trialDaysRemaining };
     } catch (error) {
         const cacheIsWithinFallbackWindow = cacheSignatureValid && (Date.now() - cache.checkedAt) < CACHE_TTL_MS;
+        const cachedRoles = cacheIsWithinFallbackWindow ? parseRoles(cache.tier) : [DEFAULT_TIER];
         const fallback = cacheIsWithinFallbackWindow
-            ? { tier: cache.tier, deviceLimitReached: !!cache.deviceLimitReached, trialDaysRemaining: cache.trialDaysRemaining || null }
-            : { tier: DEFAULT_TIER, deviceLimitReached: false, trialDaysRemaining: null };
-        log(`Could not check tier (${error.message}) — using ${fallback.tier}.`);
+            ? { tier: primaryTier(cachedRoles), roles: cachedRoles, deviceLimitReached: !!cache.deviceLimitReached, trialDaysRemaining: cache.trialDaysRemaining || null }
+            : { tier: DEFAULT_TIER, roles: [DEFAULT_TIER], deviceLimitReached: false, trialDaysRemaining: null };
+        log(`Could not check tier (${error.message}) — using ${fallback.roles.join("+")}.`);
         return fallback;
     }
 }
 
-module.exports = { checkTier, getOrCreateDeviceId, DEFAULT_TIER, KNOWN_TIERS };
+module.exports = { checkTier, getOrCreateDeviceId, DEFAULT_TIER, KNOWN_TIERS, parseRoles, primaryTier, verifyLicense };

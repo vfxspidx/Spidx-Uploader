@@ -28,6 +28,9 @@ const CONFIG_FILE = path.join(APP_DIR, "helper-config.json");
 const INCOMING = path.join(APP_DIR, "incoming");
 const ENGINE_STATUS_FILE = path.join(INCOMING, ".engine-status.json");
 const BATCH_STATUS_FILE = path.join(INCOMING, ".batch-status.json");
+const HOTKEY_STATUS_FILE = path.join(INCOMING, ".hotkey-status.json");
+const PRESET_REQUEST_FILE = path.join(INCOMING, ".preset-request.json");
+const PRESET_RESULT_FILE = path.join(INCOMING, ".preset-result.json");
 const EVENTS_FILE = path.join(APP_DIR, "helper-events.jsonl");
 const LICENSE_CACHE_FILE = path.join(APP_DIR, "license-cache.json");
 const LAST_UPLOAD_FILE = path.join(APP_DIR, "last-upload.json");
@@ -39,6 +42,10 @@ const PACKAGE_FILE = path.join(APP_DIR, "package.json");
 const CEP_EXTENSIONS_DIR = path.join(process.env.APPDATA || "", "Adobe", "CEP", "extensions");
 const upia = require("./upia.js");
 const diagnostics = require("./diagnostics.js");
+const legal = require("./legal.js");
+const uploadHistory = require("./history.js");
+const presetStore = require("./presets.js");
+const hotkey = require("./hotkey.js");
 const pluginUpdates = require("./plugin-updates.js");
 const PLUGINS = {
     ae: {
@@ -77,7 +84,15 @@ const PLUGINS = {
         kind: "upia",
         label: "Photoshop panel",
         pluginId: "com.spidx.workupload", // from the .ccx's manifest.json "id"
-        ccx: path.join(APP_DIR, "..", "UXP", "com.spidx.workupload_PS.ccx")
+        // The display name from the same manifest. UPIA documents /list and
+        // /remove in terms of the NAME, and /list all doesn't necessarily
+        // print the id - so both are matched.
+        names: ["Spidx Uploader"],
+        ccx: path.join(APP_DIR, "..", "UXP", "com.spidx.workupload_PS.ccx"),
+        // Installed/removed by elevated scripts that run Adobe's UPIA as
+        // Administrator (run without admin rights UPIA rejects the .ccx).
+        installer: path.join(APP_DIR, "..", "UXP", "Install PS Panel.bat"),
+        uninstaller: path.join(APP_DIR, "..", "UXP", "Uninstall PS Panel.bat")
     }
 };
 
@@ -95,16 +110,44 @@ function readManifestVersion(manifestPath) {
 // (see upia.listInstalled) since there's no manifest.xml to check the way
 // the CEP panels work. null/false until the first check completes, so the
 // UI can show "checking..." instead of confidently guessing wrong.
-let psInstallStatus = { checked: false, installed: false };
+let psInstallStatus = { checked: false, installed: false, version: null };
 function refreshPsInstallStatus(log) {
     const psPlugin = PLUGINS.ps;
-    upia.listInstalled(psPlugin.pluginId, log, (installed, message) => {
+    upia.listInstalled(psPlugin.pluginId, log, (installed, message, info) => {
         if (installed === null) {
             log(`Could not determine Photoshop panel install status: ${message}`);
             return; // leave the previous known state alone rather than guess
         }
-        psInstallStatus = { checked: true, installed };
-    });
+        psInstallStatus = { checked: true, installed, version: installed && info ? info.version : null };
+    }, { names: psPlugin.names });
+}
+
+// After the elevated installer/uninstaller window is opened, keep re-asking
+// UPIA for the real state every few seconds (for up to ~3 minutes, stopping as
+// soon as it changes) so the Dashboard flips to "installed"/"not installed"
+// by itself once the console window finishes.
+let psWatchTimer = null;
+function watchPsInstall(log) {
+    clearInterval(psWatchTimer);
+    const before = psInstallStatus.checked ? psInstallStatus.installed : null;
+    let ticks = 0;
+    psWatchTimer = setInterval(() => {
+        ticks++;
+        refreshPsInstallStatus(log);
+        const changed = before !== null && psInstallStatus.checked && psInstallStatus.installed !== before;
+        if (changed || ticks >= 36) clearInterval(psWatchTimer);
+    }, 5000);
+}
+
+function isNewerPsVersion(latest, current) {
+    const parts = v => String(v).split(".").map(n => parseInt(n, 10) || 0);
+    const a = parts(latest);
+    const b = parts(current);
+    for (let i = 0; i < Math.max(a.length, b.length); i++) {
+        if ((a[i] || 0) > (b[i] || 0)) return true;
+        if ((a[i] || 0) < (b[i] || 0)) return false;
+    }
+    return false;
 }
 
 function readPluginStatus(key) {
@@ -117,7 +160,7 @@ function readPluginStatus(key) {
         return {
             label: p.label,
             kind: "upia",
-            ccxAvailable: fs.existsSync(p.ccx),
+            ccxAvailable: fs.existsSync(p.ccx) && fs.existsSync(p.installer),
             upiaAvailable: !!upia.getUpiaPath(),
             // Real install state, from actually asking UPIA (see
             // refreshPsInstallStatus below) — ccxAvailable/upiaAvailable
@@ -126,7 +169,10 @@ function readPluginStatus(key) {
             // clickable and Uninstall look available right after a
             // successful install.
             checked: psInstallStatus.checked,
-            installed: psInstallStatus.installed
+            installed: psInstallStatus.installed,
+            installedVersion: psInstallStatus.installed ? psInstallStatus.version : null,
+            bundledVersion: upia.readCcxVersion(p.ccx),
+            needsUpdate: !!(psInstallStatus.installed && psInstallStatus.version && upia.readCcxVersion(p.ccx) && isNewerPsVersion(upia.readCcxVersion(p.ccx), psInstallStatus.version))
         };
     }
     if (p.kind === "vegas") {
@@ -207,6 +253,41 @@ function readHelperConfig() {
 
 function writeHelperConfig(raw) {
     fs.writeFileSync(CONFIG_FILE, JSON.stringify(raw, null, 2), "utf8");
+}
+
+// What the Client-presets card shows: every preset with its short description, which one is active and
+// whether the helper's current setup has drifted from it ("modified").
+function presetSummaries(cfg) {
+    try {
+        const { presets, activePreset } = presetStore.loadPresets(CONFIG_FILE);
+        const current = { destination: cfg.destination, drive: cfg.drive, compression: cfg.compression, cameraRawPreset: cfg.cameraRawPreset };
+        return {
+            active: activePreset,
+            items: presets.map(p => ({
+                name: p.name,
+                summary: presetStore.describePreset(p),
+                active: p.name === activePreset,
+                modified: p.name === activePreset && !presetStore.matchesConfig(p, current)
+            }))
+        };
+    } catch {
+        return { active: null, items: [] };
+    }
+}
+
+// Global shortcut: the saved settings + what the background program reports about itself.
+function hotkeyInfo(cfg) {
+    let status = null;
+    try {
+        status = JSON.parse(fs.readFileSync(HOTKEY_STATUS_FILE, "utf8"));
+        if (!status.updatedAt || Date.now() - status.updatedAt > 15000) status = null;   // the program writes it every 5 s
+    } catch {}
+    return { config: hotkey.sanitizeHotkey(cfg.hotkey), status, state: hotkey.getState() };
+}
+
+function engineIsFresh() {
+    const s = readEngineStatus();
+    return !!(s && s.updatedAt && Date.now() - s.updatedAt < 20000);
 }
 
 function readEngineStatus() {
@@ -305,7 +386,8 @@ function buildData() {
     const destination = (status && status.destination) || cfg.destination || "workupload";
 
     return {
-        tier, // raw value (free / pro / dev / tester) — shown as-is, no simplification
+        tier, // the rank (free / pro / dev / tester)
+        roles: status && Array.isArray(status.roles) ? status.roles : (tier ? [tier] : []), // all roles, e.g. ["pro","spt"]
         deviceLimitReached: !!(status && status.deviceLimitReached),
         trialDaysRemaining: (status && status.trialDaysRemaining) || null,
         expiresAt: (status && status.trialDaysRemaining)
@@ -313,9 +395,11 @@ function buildData() {
             : null, // null = permanent (paid with no trial end) or Free (no expiry to show)
         driveAllowed: tier === null || DRIVE_TIERS.has(tier),
         proFeaturesAllowed: tier === null || DRIVE_TIERS.has(tier), // same tier set — Camera Raw preset routing
+        pproAllowed: tier === null || DRIVE_TIERS.has(tier) || (status && Array.isArray(status.roles) && status.roles.indexOf("spt") !== -1), // Premiere panel: Pro rank OR the "spt" role
         engineSeen: !!status,
         statusUpdatedAt: (status && status.updatedAt) || null,
         appVersion: readAppVersion(),
+        consent: legal.consentSummary(),
         plugins: { ae: readPluginStatus("ae"), ppro: readPluginStatus("ppro"), vegas: readPluginStatus("vegas"), ps: readPluginStatus("ps") },
         pluginUpdates: pluginUpdates.readCachedPluginUpdates(),
         destination,
@@ -348,8 +432,11 @@ function buildData() {
                 enabled: !!(cfg.throttle && cfg.throttle.enabled),
                 minMs: (cfg.throttle && cfg.throttle.minMs) || 500,
                 maxMs: (cfg.throttle && cfg.throttle.maxMs) || 2000
-            }
+            },
+            compression: presetStore.sanitizeCompression(cfg.compression)
         },
+        presets: presetSummaries(cfg),
+        hotkey: hotkeyInfo(cfg),
         batch: readBatchStatus(),
         lastUpload: readLastUpload(),
         events: readRecentEvents(12),
@@ -432,6 +519,50 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
     .pill.tier-pro { color: #ffd60a; border-color: rgba(255,214,10,.3); background: rgba(255,214,10,.09); }
     .pill.tier-dev { color: #c07bff; border-color: rgba(192,123,255,.3); background: rgba(192,123,255,.1); }
     .pill.tier-tester { color: #64d2ff; border-color: rgba(100,210,255,.3); background: rgba(100,210,255,.1); }
+    /* ---- upload history ---- */
+    .hist-tools { display: flex; gap: 10px; align-items: center; margin-bottom: 14px; }
+    .hist-tools input { flex: 1; min-width: 0; }
+    .hist-row { display: grid; grid-template-columns: 112px minmax(0, 1fr) auto; gap: 14px; align-items: center; padding: 12px 14px; border: 1px solid var(--line); border-radius: 12px; margin-bottom: 8px; background: var(--surface); animation: fade .2s ease; }
+    .hist-when { font-size: 12px; color: var(--text-dim); line-height: 1.4; }
+    .hist-when b { display: block; color: var(--text); font-size: 12.5px; }
+    .hist-main { min-width: 0; }
+    .hist-files { font-size: 13px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .hist-chips { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 6px; }
+    .chip { font-size: 10.5px; font-weight: 700; padding: 3px 8px; border-radius: 999px; background: var(--surface-2); color: var(--text-dim); }
+    .chip.src { background: rgba(10,132,255,.16); color: var(--accent-2); }
+    .chip.ps { background: rgba(255,159,10,.14); color: var(--warn); }
+    .hist-links { margin-top: 7px; display: flex; flex-direction: column; gap: 3px; }
+    .hist-links a { font-size: 12px; color: var(--accent-2); text-decoration: none; word-break: break-all; }
+    .hist-links a:hover { text-decoration: underline; }
+    .hist-actions { display: flex; gap: 6px; }
+    .hist-actions .mini-btn { margin: 0; }
+
+    /* ---- consent banner ---- */
+    .legal-banner {
+        display: flex; gap: 16px; align-items: center; justify-content: space-between; flex-wrap: wrap;
+        margin: 0 0 18px; padding: 14px 16px; border-radius: var(--radius); border: 1px solid rgba(255,159,10,.35);
+        background: rgba(255,159,10,.08);
+    }
+    .legal-banner b { display: block; font-size: 13.5px; margin-bottom: 3px; }
+    .legal-banner span { font-size: 12.5px; color: var(--text-dim); line-height: 1.5; }
+    .legal-banner .actions { display: flex; gap: 10px; align-items: center; margin: 0; }
+    .legal-banner a { color: var(--accent-2); font-size: 12.5px; text-decoration: none; }
+    .legal-banner a:hover { text-decoration: underline; }
+
+    /* ---- legal links (Support card + footer on every tab) ---- */
+    .legal-row { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 14px; }
+    .legal-link {
+        display: inline-flex; align-items: center; gap: 7px; padding: 9px 14px; border-radius: 10px;
+        border: 1px solid var(--line); background: var(--surface-2); color: var(--text);
+        text-decoration: none; font-size: 12.5px; font-weight: 600; transition: border-color .15s ease, transform .1s ease;
+    }
+    .legal-link:hover { border-color: var(--accent); }
+    .legal-link:active { transform: translateY(1px); }
+    .legal-link .ext { color: var(--text-faint); font-weight: 500; }
+    .legal-foot { margin: 26px 0 8px; padding-top: 16px; border-top: 1px solid var(--line); font-size: 11.5px; color: var(--text-dim); text-align: center; line-height: 1.8; }
+    .legal-foot a { color: var(--accent-2); text-decoration: none; }
+    .legal-foot a:hover { text-decoration: underline; }
+    .pill.tier-spt { color: #ff9f0a; border-color: rgba(255,159,10,.3); background: rgba(255,159,10,.1); }
 
     @keyframes breathe { 0%,100% { opacity: 1; } 50% { opacity: .35; } }
 
@@ -694,8 +825,22 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
         </div>
     </div>
 
+    <div class="legal-banner" id="legalBanner" style="display:none;">
+        <div>
+            <b id="legalBannerTitle">Please review the Terms of Service, the EULA and the Privacy Policy</b>
+            <span id="legalBannerText"></span>
+        </div>
+        <div class="actions">
+            <a href="https://spidxuploader.com/terms" target="_blank" rel="noopener noreferrer">Terms of Service</a>
+            <a href="https://spidxuploader.com/eula" target="_blank" rel="noopener noreferrer">EULA</a>
+            <a href="https://spidxuploader.com/privacy" target="_blank" rel="noopener noreferrer">Privacy Policy</a>
+            <button class="btn" id="acceptLegalBtn">I agree</button>
+        </div>
+    </div>
+
     <div class="tabs">
         <button class="tab active" data-page="overview">Overview</button>
+        <button class="tab" data-page="history">History</button>
         <button class="tab" data-page="account">Account</button>
         <button class="tab" data-page="settings">Settings</button>
         <button class="tab" data-page="activity">Activity</button>
@@ -814,7 +959,7 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
                 </div>
             </div>
             <div class="field" id="pluginRowVegas">
-                <label>VEGAS Pro plugin — <span id="pluginStatusVegas">—</span></label>
+                <label>VEGAS Pro plugin <span style="color: var(--text-faint); font-weight: 500;">(uploading needs Pro)</span> — <span id="pluginStatusVegas">—</span></label>
                 <div class="actions" style="margin-top:6px;">
                     <button class="btn" id="installVegasBtn">Install</button>
                     <button class="btn danger" id="uninstallVegasBtn" disabled>Uninstall</button>
@@ -860,14 +1005,74 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
             <div id="selfTestResults" style="margin-top: 12px;"></div>
         </div>
 
-        <div class="card">
-            <h2>Support</h2>
+        <div class="card" id="legalCard">
+            <h2>Support &amp; legal</h2>
             <p class="desc" id="supportLine">Questions or a bug to report? <a href="#" id="supportLink" style="display:none;">Contact support</a><span id="supportFallback">— link not set up yet.</span></p>
+            <p class="desc" style="margin-bottom: 0;">The Terms of Service say how Spidx Uploader may be used, the EULA is the software licence, and the Privacy Policy explains what is sent where (sign-in and license check, uploads, update checks) and what stays on your computer. Refunds and the Thumbnail Pack licence have their own pages.</p>
+            <p class="desc" id="consentLine" style="margin: 12px 0 0;"></p>
+            <div class="legal-row">
+                <a class="legal-link" id="termsLink" href="https://spidxuploader.com/terms" target="_blank" rel="noopener noreferrer">Terms of Service <span class="ext">&#8599;</span></a>
+                <a class="legal-link" id="eulaLink" href="https://spidxuploader.com/eula" target="_blank" rel="noopener noreferrer">EULA <span class="ext">&#8599;</span></a>
+                <a class="legal-link" id="privacyLink" href="https://spidxuploader.com/privacy" target="_blank" rel="noopener noreferrer">Privacy Policy <span class="ext">&#8599;</span></a>
+                <a class="legal-link" id="refundLink" href="https://spidxuploader.com/refund" target="_blank" rel="noopener noreferrer">Refunds <span class="ext">&#8599;</span></a>
+                <a class="legal-link" id="siteLink" href="https://spidxuploader.com/" target="_blank" rel="noopener noreferrer">spidxuploader.com <span class="ext">&#8599;</span></a>
+            </div>
+        </div>
+    </div>
+
+    <!-- ============ HISTORY ============ -->
+    <div class="page" id="page-history">
+        <div class="card">
+            <h2>Upload history</h2>
+            <p class="desc">Your latest uploads with their links - copy a link again any time. Stored only on this computer (App\\upload-history.json), newest first, up to 500 entries.</p>
+            <div class="hist-tools">
+                <input type="text" id="histSearch" placeholder="Search file name, folder, client...">
+                <button class="btn ghost" id="histClearBtn">Clear history</button>
+            </div>
+            <div id="histList"></div>
+            <div class="empty" id="histEmpty" style="display:none;">No uploads yet - the next one shows up here.</div>
         </div>
     </div>
 
     <!-- ============ SETTINGS ============ -->
     <div class="page" id="page-settings">
+        <div class="card" id="presetsCard">
+            <h2>Client presets</h2>
+            <p class="desc">One choice sets the destination, the Google Drive folder, image compression and the Camera Raw action. Set things up the way a client needs them, save that as a preset, then switch between clients here or from the Premiere Pro / After Effects panels.</p>
+            <div class="actions" style="margin-top: 0;">
+                <input type="text" id="presetName" placeholder="Preset name, e.g. Client A" maxlength="60" style="max-width: 260px;">
+                <button class="btn" id="presetSaveBtn">Save current setup as preset</button>
+                <span class="note" id="presetsNote" style="margin-top: 0;"></span>
+            </div>
+            <div id="presetList" style="margin-top: 14px;"></div>
+            <div class="empty" id="presetsEmpty">No presets yet - save your current setup to create the first one.</div>
+        </div>
+
+        <div class="card" id="hotkeyCard">
+            <h2>Global shortcut</h2>
+            <p class="desc">Press a shortcut while After Effects, Premiere Pro, Photoshop or VEGAS Pro is in front and the current frame is sent - exactly like clicking Upload in the Spidx panel there. The panel only has to be open in that program (Window &gt; Extensions). Free for everyone.</p>
+            <div class="set-group">
+                <div class="set-row">
+                    <div class="txt"><b>Enable the global shortcut</b><span>Works while the Spidx tray app is running.</span></div>
+                    <label class="switch"><input type="checkbox" id="hotkeyEnabled"><span class="track"></span></label>
+                </div>
+                <div class="set-row sub" data-dep="hotkeyEnabled">
+                    <div class="txt"><b>Upload</b><span>Click the box, then press the keys. Needs Ctrl, Alt, Shift or Win plus one key.</span></div>
+                    <input type="text" id="hotkeySend" readonly style="max-width: 190px; text-align: center; cursor: pointer;">
+                </div>
+                <div class="set-row sub" data-dep="hotkeyEnabled">
+                    <div class="txt"><b>Photoshop + Upload</b><span>The Camera Raw route (a Pro feature, needs an Action set in the Dashboard).</span></div>
+                    <input type="text" id="hotkeySendPs" readonly style="max-width: 190px; text-align: center; cursor: pointer;">
+                </div>
+            </div>
+            <div class="savebar">
+                <button class="btn" id="hotkeySaveBtn">Save shortcut</button>
+                <button class="btn ghost" id="hotkeyResetBtn">Reset to default</button>
+                <span class="note" id="hotkeyNote" style="margin-top: 0;"></span>
+            </div>
+            <div class="note" id="hotkeyStatus" style="margin-top: 10px;"></div>
+        </div>
+
         <div class="card" id="tourCardSettings">
             <h2>Helper settings</h2>
             <p class="desc">Written straight to helper-config.json — the helper restarts itself automatically to apply changes.</p>
@@ -928,6 +1133,15 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
                 </div>
 
                 <div class="set-row">
+                    <div class="txt"><b>Compress images before upload</b><span>Stills bigger than the target are re-encoded as JPEG to fit it. Video is never touched.</span></div>
+                    <label class="switch"><input type="checkbox" id="compressionEnabled"><span class="track"></span></label>
+                </div>
+                <div class="set-row sub" data-dep="compressionEnabled">
+                    <div class="txt"><b>Target size (MB)</b></div>
+                    <input type="number" id="compressionTargetMB" min="0.3" max="25" step="0.1">
+                </div>
+
+                <div class="set-row">
                     <div class="txt"><b>Throttle between requests</b><span>Small random delay before each upload.</span></div>
                     <label class="switch"><input type="checkbox" id="throttleEnabled"><span class="track"></span></label>
                 </div>
@@ -956,6 +1170,14 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
             <ul class="events" id="eventsList"></ul>
             <div class="empty" id="eventsEmpty" style="display:none;">Nothing logged yet.</div>
         </div>
+    </div>
+
+    <div class="legal-foot" id="legalFoot">
+        Spidx Uploader <span id="footVersion"></span> &middot;
+        <a href="https://spidxuploader.com/terms" target="_blank" rel="noopener noreferrer">Terms of Service</a> &middot;
+        <a href="https://spidxuploader.com/eula" target="_blank" rel="noopener noreferrer">EULA</a> &middot;
+        <a href="https://spidxuploader.com/privacy" target="_blank" rel="noopener noreferrer">Privacy Policy</a> &middot;
+        <a href="https://spidxuploader.com/" target="_blank" rel="noopener noreferrer">spidxuploader.com</a>
     </div>
 </div>
 
@@ -1031,9 +1253,13 @@ function batchLabel(batch) {
 function render() {
     /* --- tier + helper pills --- */
     const tierPill = $("tierPill");
-    tierPill.className = "pill " + (data.tier ? "tier-" + data.tier : "off");
-    $("tierPillText").textContent = data.tier
-        ? data.tier.toUpperCase() + (data.trialDaysRemaining ? " · " + data.trialDaysRemaining + "d left" : "")
+    // roles: "PRO + SPT" - the pill takes the colour of the highest one
+    var pillRoles = (data.roles && data.roles.length) ? data.roles : (data.tier ? [data.tier] : []);
+    var pillShown = pillRoles.filter(function (r) { return r !== "free" || pillRoles.length === 1; });
+    var pillClass = ["dev", "tester", "pro", "spt", "free"].filter(function (r) { return pillRoles.indexOf(r) !== -1; })[0];
+    tierPill.className = "pill " + (pillClass ? "tier-" + pillClass : "off");
+    $("tierPillText").textContent = pillRoles.length
+        ? pillShown.join(" + ").toUpperCase() + (data.trialDaysRemaining ? " · " + data.trialDaysRemaining + "d left" : "")
         : "tier unknown";
 
     const helperPill = $("helperPill");
@@ -1159,6 +1385,10 @@ function render() {
     $("licenseSummary").textContent = summary;
 
     $("appVersionLine").textContent = data.appVersion ? "Current version: " + data.appVersion : "Current version unknown.";
+    $("footVersion").textContent = data.appVersion ? "v" + data.appVersion : "";
+    renderConsent(data.consent);
+    renderPresets(data.presets);
+    renderHotkey(data.hotkey);
 
     var aeStatus = data.plugins && data.plugins.ae;
     var pproStatus = data.plugins && data.plugins.ppro;
@@ -1186,12 +1416,12 @@ function render() {
     $("uninstallPproBtn").disabled = !(pproStatus && pproStatus.installed);
     $("installAeBtn").disabled = false;
     $("installAeBtn").textContent = installLabel(aeStatus);
-    if (data.proFeaturesAllowed) {
+    if (data.pproAllowed) {
         $("installPproBtn").disabled = false;
         $("installPproBtn").textContent = installLabel(pproStatus);
     } else {
         $("installPproBtn").disabled = true;
-        $("installPproBtn").textContent = "Pro feature";
+        $("installPproBtn").textContent = "Needs Pro or the Pack";
     }
     // Real install state now comes from actually asking UPIA (/list all)
     // — see refreshPsInstallStatus() server-side. ccxAvailable/upiaAvailable
@@ -1210,14 +1440,17 @@ function render() {
         $("installPsBtn").textContent = "Install";
         $("uninstallPsBtn").disabled = true;
     } else if (!psStatus.checked) {
-        $("pluginStatusPs").textContent = "checking...";
-        $("installPsBtn").disabled = true;
-        $("installPsBtn").textContent = "Install";
-        $("uninstallPsBtn").disabled = true;
-    } else if (psStatus.installed) {
-        $("pluginStatusPs").textContent = "installed";
+        // status unknown (still checking, or UPIA's list isn't readable) - installing
+        // doesn't depend on it, so don't lock the buttons
+        $("pluginStatusPs").textContent = "checking... (use Refresh status)";
         $("installPsBtn").disabled = false;
-        $("installPsBtn").textContent = "Reinstall";
+        $("installPsBtn").textContent = "Install";
+        $("uninstallPsBtn").disabled = false;
+    } else if (psStatus.installed) {
+        $("pluginStatusPs").textContent = "installed" + (psStatus.installedVersion ? " v" + psStatus.installedVersion : "")
+            + (psStatus.needsUpdate ? " (v" + psStatus.bundledVersion + " available)" : "");
+        $("installPsBtn").disabled = false;
+        $("installPsBtn").textContent = psStatus.needsUpdate ? "Update" : "Reinstall";
         $("uninstallPsBtn").disabled = false;
     } else {
         $("pluginStatusPs").textContent = "not installed";
@@ -1241,6 +1474,8 @@ function render() {
         $("browserIdleEnabled").checked = s.browserIdle.enabled;
         $("browserIdleTimeoutSeconds").value = s.browserIdle.timeoutSeconds;
         $("batchTimeoutSeconds").value = s.batch.timeoutSeconds;
+        $("compressionEnabled").checked = s.compression.enabled;
+        $("compressionTargetMB").value = s.compression.targetMB;
         $("throttleEnabled").checked = s.throttle.enabled;
         $("throttleMinMs").value = s.throttle.minMs;
         $("throttleMaxMs").value = s.throttle.maxMs;
@@ -1405,8 +1640,8 @@ $("installUpdateBtn").addEventListener("click", async function () {
 
 function uninstallPlugin(key, btnId) {
     return async function () {
-        if (!confirm("Uninstall this plugin?" + (key === "ps" ? "" : " A console window will open to remove it — close the host app first if it's running."))) return;
-        setNote("pluginNote", key === "ps" ? "Removing..." : "Opening uninstaller...");
+        if (!confirm("Uninstall this plugin? A console window will open to remove it — close the host app first if it's running.")) return;
+        setNote("pluginNote", "Opening uninstaller...");
         try {
             const res = await fetch("/uninstall-plugin", {
                 method: "POST",
@@ -1414,9 +1649,7 @@ function uninstallPlugin(key, btnId) {
                 body: JSON.stringify({ plugin: key })
             });
             const result = await res.json();
-            const okMsg = key === "ps" ? "Removed — rechecking status..." : "Uninstaller opened — follow the console window.";
-            setNote("pluginNote", result.ok ? okMsg : (result.message || "Could not uninstall."), result.ok ? "ok" : "err");
-            if (result.ok && key === "ps") setTimeout(refresh, 2000);
+            setNote("pluginNote", result.ok ? "Uninstaller opened — follow the console window." : (result.message || "Could not uninstall."), result.ok ? "ok" : "err");
         } catch (e) {
             setNote("pluginNote", "Could not reach the dashboard server.", "err");
         }
@@ -1429,7 +1662,7 @@ $("uninstallPsBtn").addEventListener("click", uninstallPlugin("ps"));
 
 function installPlugin(key) {
     return async function () {
-        setNote("pluginNote", key === "ps" ? "Installing..." : "Opening installer...");
+        setNote("pluginNote", "Opening installer...");
         try {
             const res = await fetch("/install-plugin", {
                 method: "POST",
@@ -1437,9 +1670,10 @@ function installPlugin(key) {
                 body: JSON.stringify({ plugin: key })
             });
             const result = await res.json();
-            const okMsg = key === "ps" ? "Installed — rechecking status..." : "Installer opened — follow the console window.";
+            const okMsg = key === "ps"
+                ? "Installer opened (allow the administrator prompt) — follow the console window; this page updates by itself when it finishes."
+                : "Installer opened — follow the console window.";
             setNote("pluginNote", result.ok ? okMsg : (result.message || "Could not install."), result.ok ? "ok" : "err");
-            if (result.ok && key === "ps") setTimeout(refresh, 2000);
         } catch (e) {
             setNote("pluginNote", "Could not reach the dashboard server.", "err");
         }
@@ -1484,6 +1718,282 @@ $("restoreFile").addEventListener("change", async function () {
     }
 });
 
+
+/* ---------------- global shortcut ---------------- */
+var hotkeyLoadedOnce = false;
+var HOTKEY_DEFAULTS = { send: "Ctrl+Alt+U", sendPs: "Ctrl+Alt+Shift+U" };
+var HOTKEY_NAMED = { " ": "Space", "Tab": "Tab", "Enter": "Enter", "Insert": "Insert", "Delete": "Delete", "Home": "Home", "End": "End",
+    "PageUp": "PageUp", "PageDown": "PageDown", "ArrowLeft": "Left", "ArrowUp": "Up", "ArrowRight": "Right", "ArrowDown": "Down", "PrintScreen": "PrintScreen" };
+
+// Turns a keydown into "Ctrl+Alt+U" (null while only modifiers are held / for keys the shortcut can't use).
+function hotkeyFromEvent(e) {
+    var key = e.key;
+    if (key === "Control" || key === "Alt" || key === "Shift" || key === "Meta") return null;
+    var name = null;
+    if (/^[a-zA-Z]$/.test(key)) name = key.toUpperCase();
+    else if (/^[0-9]$/.test(key)) name = key;
+    else if (/^F([1-9]|1[0-9]|2[0-4])$/.test(key)) name = key;
+    else if (HOTKEY_NAMED[key]) name = HOTKEY_NAMED[key];
+    if (!name) return null;
+    if (!(e.ctrlKey || e.altKey || e.shiftKey || e.metaKey)) return null;
+    return (e.ctrlKey ? "Ctrl+" : "") + (e.altKey ? "Alt+" : "") + (e.shiftKey ? "Shift+" : "") + (e.metaKey ? "Win+" : "") + name;
+}
+
+function wireHotkeyInput(id) {
+    var input = $(id);
+    var before = "";
+    input.addEventListener("focus", function () { before = input.value; input.placeholder = "Press the keys..."; input.select(); });
+    input.addEventListener("blur", function () { input.placeholder = ""; if (!input.value) input.value = before; });
+    input.addEventListener("keydown", function (e) {
+        e.preventDefault();
+        if (e.key === "Escape") { input.value = before; input.blur(); return; }
+        var combo = hotkeyFromEvent(e);
+        if (combo) { input.value = combo; before = combo; input.blur(); }
+    });
+}
+wireHotkeyInput("hotkeySend");
+wireHotkeyInput("hotkeySendPs");
+
+function renderHotkey(info) {
+    if (!info) return;
+    if (!hotkeyLoadedOnce) {
+        hotkeyLoadedOnce = true;
+        $("hotkeyEnabled").checked = info.config.enabled;
+        $("hotkeySend").value = info.config.send;
+        $("hotkeySendPs").value = info.config.sendPs;
+        applySubRowLocks();
+    }
+    var el = $("hotkeyStatus");
+    var s = info.status;
+    var text, kind = "";
+    if (!info.state.supported) { text = "The global shortcut works on Windows only."; kind = "err"; }
+    else if (!info.config.enabled) { text = "Off."; }
+    else if (info.state.lastError) { text = info.state.lastError; kind = "err"; }
+    else if (!s) { text = "Starting... (the first start builds a small helper program - a few seconds).";}
+    else if (s.error) { text = s.error + " Pick another shortcut and save."; kind = "err"; }
+    else { text = "Active: " + s.send.combo + " sends a frame, " + s.sendPs.combo + " sends it through Photoshop."; kind = "ok"; }
+    el.textContent = text;
+    el.className = "note" + (kind ? " " + kind : "");
+}
+
+$("hotkeySaveBtn").addEventListener("click", async function () {
+    var out = await presetRequest("/save-hotkey", { enabled: $("hotkeyEnabled").checked, send: $("hotkeySend").value, sendPs: $("hotkeySendPs").value });
+    setNote("hotkeyNote", out.ok ? "Saved - applied in a few seconds." : (out.message || "Could not save."), out.ok ? "ok" : "err");
+    if (out.ok) { hotkeyLoadedOnce = false; refresh(); }
+});
+
+$("hotkeyResetBtn").addEventListener("click", function () {
+    $("hotkeySend").value = HOTKEY_DEFAULTS.send;
+    $("hotkeySendPs").value = HOTKEY_DEFAULTS.sendPs;
+    $("hotkeyEnabled").checked = true;
+    applySubRowLocks();
+    setNote("hotkeyNote", "Defaults restored - press Save to apply.", "");
+});
+
+/* ---------------- client presets ---------------- */
+function presetRequest(url, body) {
+    return fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body || {}) }).then(function (r) { return r.json(); });
+}
+
+function renderPresets(info) {
+    var list = $("presetList");
+    list.textContent = "";
+    var items = (info && info.items) || [];
+    $("presetsEmpty").style.display = items.length ? "none" : "";
+    items.forEach(function (p) {
+        var row = document.createElement("div");
+        row.className = "hist-row";
+        row.style.gridTemplateColumns = "minmax(0, 1fr) auto";
+
+        var main = document.createElement("div");
+        main.className = "hist-main";
+        var name = document.createElement("div");
+        name.className = "hist-files";
+        name.textContent = p.name;
+        main.appendChild(name);
+        var chips = document.createElement("div");
+        chips.className = "hist-chips";
+        if (p.active) chips.appendChild(histChip(p.modified ? "Active (modified)" : "Active", p.modified ? "ps" : "src"));
+        p.summary.forEach(function (s) { chips.appendChild(histChip(s)); });
+        main.appendChild(chips);
+        row.appendChild(main);
+
+        var actions = document.createElement("div");
+        actions.className = "hist-actions";
+        function act(label, fn) {
+            var b = document.createElement("button");
+            b.className = "mini-btn";
+            b.textContent = label;
+            b.addEventListener("click", fn);
+            actions.appendChild(b);
+        }
+        act(p.active && !p.modified ? "Applied" : "Apply", async function () {
+            var out = await presetRequest("/presets/apply", { name: p.name });
+            setNote("presetsNote", out.ok ? ("Preset \u201c" + p.name + "\u201d applied." + (out.message ? " " + out.message : "")) : (out.message || "Could not apply."), out.ok ? "ok" : "err");
+            refresh();
+        });
+        act("Update from current", async function () {
+            if (!confirm("Overwrite preset \u201c" + p.name + "\u201d with the current setup?")) return;
+            var out = await presetRequest("/presets/save", { name: p.name, overwrite: true });
+            setNote("presetsNote", out.ok ? "Preset updated." : (out.message || "Could not update."), out.ok ? "ok" : "err");
+            refresh();
+        });
+        act("Delete", async function () {
+            if (!confirm("Delete preset \u201c" + p.name + "\u201d?")) return;
+            await presetRequest("/presets/delete", { name: p.name });
+            refresh();
+        });
+        row.appendChild(actions);
+        list.appendChild(row);
+    });
+}
+
+$("presetSaveBtn").addEventListener("click", async function () {
+    var name = ($("presetName").value || "").trim();
+    if (!name) { setNote("presetsNote", "Give the preset a name first.", "err"); return; }
+    var out = await presetRequest("/presets/save", { name: name });
+    setNote("presetsNote", out.ok ? "Saved \u201c" + name + "\u201d." : (out.message || "Could not save."), out.ok ? "ok" : "err");
+    if (out.ok) $("presetName").value = "";
+    refresh();
+});
+
+/* ---------------- upload history ---------------- */
+var historyItems = [];
+
+function histChip(text, cls) {
+    var c = document.createElement("span");
+    c.className = "chip" + (cls ? " " + cls : "");
+    c.textContent = text;
+    return c;
+}
+
+function renderHistory() {
+    var list = $("histList");
+    var q = ($("histSearch").value || "").toLowerCase().trim();
+    list.textContent = "";
+    var shown = historyItems.filter(function (e) {
+        if (!q) return true;
+        return (e.files.join(" ") + " " + (e.folder || "") + " " + (e.preset || "") + " " + (e.destination || "") + " " + (e.source || "")).toLowerCase().indexOf(q) !== -1;
+    });
+    $("histEmpty").style.display = shown.length ? "none" : "";
+    $("histEmpty").textContent = historyItems.length ? "Nothing matches your search." : "No uploads yet - the next one shows up here.";
+    shown.forEach(function (e) {
+        var row = document.createElement("div");
+        row.className = "hist-row";
+
+        var when = document.createElement("div");
+        when.className = "hist-when";
+        var b = document.createElement("b");
+        b.textContent = relTime(e.time);
+        when.appendChild(b);
+        when.appendChild(document.createTextNode(fmtTime(e.time)));
+        row.appendChild(when);
+
+        var main = document.createElement("div");
+        main.className = "hist-main";
+        var files = document.createElement("div");
+        files.className = "hist-files";
+        files.textContent = e.files[0] + (e.files.length > 1 ? "  +" + (e.files.length - 1) + " more" : "");
+        files.title = e.files.join(", ");
+        main.appendChild(files);
+        var chips = document.createElement("div");
+        chips.className = "hist-chips";
+        chips.appendChild(histChip(e.destination === "drive" ? "Google Drive" : "WorkUpload"));
+        if (e.folder) chips.appendChild(histChip(e.folder));
+        if (e.preset) chips.appendChild(histChip("Preset: " + e.preset));
+        if (e.source === "vegas") chips.appendChild(histChip("VEGAS Pro", "src"));
+        if (e.viaPhotoshop) chips.appendChild(histChip("via Photoshop", "ps"));
+        main.appendChild(chips);
+        if (e.links && e.links.length) {
+            var links = document.createElement("div");
+            links.className = "hist-links";
+            e.links.forEach(function (url) {
+                var a = document.createElement("a");
+                a.href = url;
+                a.target = "_blank";
+                a.rel = "noopener noreferrer";
+                a.textContent = url;
+                links.appendChild(a);
+            });
+            main.appendChild(links);
+        }
+        row.appendChild(main);
+
+        var actions = document.createElement("div");
+        actions.className = "hist-actions";
+        if (e.links && e.links.length) {
+            var copy = document.createElement("button");
+            copy.className = "mini-btn";
+            copy.textContent = e.links.length > 1 ? "Copy " + e.links.length : "Copy link";
+            copy.addEventListener("click", function () {
+                navigator.clipboard.writeText(e.links.join("\\n")).then(function () { toast("Link copied.", "ok"); }, function () { toast("Could not copy.", "err"); });
+            });
+            actions.appendChild(copy);
+        }
+        var del = document.createElement("button");
+        del.className = "mini-btn";
+        del.textContent = "Remove";
+        del.addEventListener("click", async function () {
+            await fetch("/history/delete", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: e.id }) });
+            loadHistory();
+        });
+        actions.appendChild(del);
+        row.appendChild(actions);
+        list.appendChild(row);
+    });
+}
+
+async function loadHistory() {
+    try {
+        var res = await fetch("/history");
+        var out = await res.json();
+        historyItems = out.items || [];
+        renderHistory();
+    } catch (e) { /* the next poll retries */ }
+}
+
+$("histSearch").addEventListener("input", renderHistory);
+$("histClearBtn").addEventListener("click", async function () {
+    if (!historyItems.length) return;
+    if (!confirm("Delete the whole upload history? (The uploaded files and their links stay valid - only this list is cleared.)")) return;
+    await fetch("/history/clear", { method: "POST" });
+    loadHistory();
+    toast("History cleared.", "ok");
+});
+setInterval(function () { if ($("page-history").classList.contains("active")) loadHistory(); }, 5000);
+document.querySelector('.tab[data-page="history"]').addEventListener("click", loadHistory);
+
+/* ---------------- legal consent ---------------- */
+function renderConsent(consent) {
+    var banner = $("legalBanner");
+    if (!consent) { banner.style.display = "none"; return; }
+    banner.style.display = consent.accepted ? "none" : "";
+    if (!consent.accepted) {
+        $("legalBannerTitle").textContent = consent.acceptedVersion
+            ? "The Terms of Service or Privacy Policy changed"
+            : "Please review the Terms of Service, the EULA and the Privacy Policy";
+        $("legalBannerText").textContent = consent.acceptedVersion
+            ? "You accepted an earlier version (" + consent.acceptedVersion + "). Please read the current texts and accept them to keep using Spidx Uploader."
+            : "Spidx Uploader asks you to accept them once. Nothing is blocked while you read them.";
+    }
+    $("consentLine").textContent = consent.accepted
+        ? "You accepted version " + consent.acceptedVersion + " on " + new Date(consent.acceptedAt).toLocaleDateString() + "."
+        : "Not accepted yet.";
+}
+
+$("acceptLegalBtn").addEventListener("click", async function () {
+    var btn = this;
+    btn.disabled = true;
+    try {
+        var res = await fetch("/accept-legal", { method: "POST" });
+        var out = await res.json();
+        if (out.ok) { renderConsent(out.consent); toast("Thanks - saved.", "ok"); }
+        else toast(out.message || "Could not save.", "err");
+    } catch (e) {
+        toast("Could not reach the dashboard server.", "err");
+    }
+    btn.disabled = false;
+});
 
 /* ---------------- plugin updates ---------------- */
 function renderPluginUpdates(info) {
@@ -1615,7 +2125,7 @@ if (SUPPORT_URL) {
 
 function describeTier(result) {
     if (!result.tier) return "";
-    var label = result.tier.charAt(0).toUpperCase() + result.tier.slice(1);
+    var label = String(result.tier).toUpperCase().replace(/[+,| ]+/g, " + "); // "pro+spt" -> "PRO + SPT"
     // null trialDaysRemaining = no expiry (lifetime), same convention the
     // license server uses.
     return label + (result.trialDaysRemaining ? " (" + result.trialDaysRemaining + (result.trialDaysRemaining === 1 ? " day" : " days") + " left)" : " (lifetime)");
@@ -1906,7 +2416,8 @@ $("saveSettingsBtn").addEventListener("click", async function () {
             enabled: $("throttleEnabled").checked,
             minMs: Number($("throttleMinMs").value),
             maxMs: Number($("throttleMaxMs").value)
-        }
+        },
+        compression: { enabled: $("compressionEnabled").checked, targetMB: Number($("compressionTargetMB").value) }
     };
 
     try {
@@ -2103,6 +2614,135 @@ function openDashboard(log = console.log, controls = {}) {
         if (url.pathname === "/data" && req.method === "GET") {
             res.writeHead(200, { "Content-Type": "application/json" });
             res.end(JSON.stringify(buildData()));
+            return;
+        }
+
+        if (url.pathname === "/save-hotkey" && req.method === "POST") {
+            let body = "";
+            req.on("data", chunk => { body += chunk; });
+            req.on("end", () => {
+                const reply = (obj) => { res.writeHead(200, { "Content-Type": "application/json" }); res.end(JSON.stringify(obj)); };
+                try {
+                    const p = JSON.parse(body || "{}");
+                    const send = hotkey.normalizeCombo(p.send);
+                    const sendPs = hotkey.normalizeCombo(p.sendPs);
+                    if (!send) return reply({ ok: false, message: "\"Upload\" needs a shortcut with Ctrl, Alt, Shift or Win plus one key, e.g. Ctrl+Alt+U." });
+                    if (!sendPs) return reply({ ok: false, message: "\"Photoshop + Upload\" needs a shortcut with Ctrl, Alt, Shift or Win plus one key." });
+                    if (send === sendPs) return reply({ ok: false, message: "The two actions need different shortcuts." });
+                    const cfg = readHelperConfig();
+                    cfg.hotkey = { enabled: !!p.enabled, send, sendPs };
+                    writeHelperConfig(cfg);
+                    try { hotkey.ensureRunning(msg => log(`Shortcut: ${msg}`)); } catch (err) { log(`Shortcut: ${err.message}`); }
+                    log(`Dashboard: global shortcut ${cfg.hotkey.enabled ? `set to ${send} / ${sendPs}` : "turned off"}.`);
+                    reply({ ok: true });
+                } catch (err) {
+                    reply({ ok: false, message: err.message });
+                }
+            });
+            return;
+        }
+
+        if (url.pathname.indexOf("/presets/") === 0 && req.method === "POST") {
+            let body = "";
+            req.on("data", chunk => { body += chunk; });
+            req.on("end", async () => {
+                const reply = (obj) => { res.writeHead(200, { "Content-Type": "application/json" }); res.end(JSON.stringify(obj)); };
+                try {
+                    const parsed = JSON.parse(body || "{}");
+                    const name = String(parsed.name || "").trim();
+                    const loaded = presetStore.loadPresets(CONFIG_FILE);
+                    const find = n => loaded.presets.find(p => p.name.toLowerCase() === String(n).toLowerCase());
+
+                    if (url.pathname === "/presets/save") {
+                        if (!name) return reply({ ok: false, message: "Give the preset a name." });
+                        const existing = find(name);
+                        if (existing && !parsed.overwrite) return reply({ ok: false, message: `A preset called "${existing.name}" already exists - use "Update from current" to overwrite it.` });
+                        const cfg = readHelperConfig();
+                        const snap = presetStore.snapshotFromConfig({
+                            destination: cfg.destination, drive: cfg.drive, compression: cfg.compression, cameraRawPreset: cfg.cameraRawPreset
+                        }, existing ? existing.name : name);
+                        const next = loaded.presets.filter(p => p !== existing).concat(snap);
+                        if (!existing && next.length > presetStore.MAX_PRESETS) return reply({ ok: false, message: `At most ${presetStore.MAX_PRESETS} presets - delete one first.` });
+                        presetStore.savePresets(CONFIG_FILE, next, loaded.activePreset);
+                        log(`Dashboard: preset "${snap.name}" ${existing ? "updated" : "saved"}.`);
+                        return reply({ ok: true });
+                    }
+
+                    if (url.pathname === "/presets/delete") {
+                        const existing = find(name);
+                        if (!existing) return reply({ ok: false, message: "No such preset." });
+                        presetStore.savePresets(CONFIG_FILE, loaded.presets.filter(p => p !== existing), loaded.activePreset === existing.name ? null : loaded.activePreset);
+                        log(`Dashboard: preset "${existing.name}" deleted.`);
+                        return reply({ ok: true });
+                    }
+
+                    if (url.pathname === "/presets/apply") {
+                        const preset = find(name);
+                        if (!preset) return reply({ ok: false, message: "No such preset." });
+                        if (engineIsFresh()) {
+                            // the running helper applies it live - ask and wait for its answer
+                            const id = String(Date.now());
+                            try { fs.unlinkSync(PRESET_RESULT_FILE); } catch {}
+                            fs.writeFileSync(PRESET_REQUEST_FILE, JSON.stringify({ id, name: preset.name }), "utf8");
+                            for (let i = 0; i < 30; i++) {
+                                await new Promise(r => setTimeout(r, 150));
+                                try {
+                                    const result = JSON.parse(fs.readFileSync(PRESET_RESULT_FILE, "utf8"));
+                                    if (result.id === id) return reply({ ok: !!result.ok, message: result.message || "" });
+                                } catch {}
+                            }
+                            return reply({ ok: false, message: "The helper didn't answer in time - try again in a moment." });
+                        }
+                        // helper not running: write the settings so the next start uses them
+                        presetStore.applyPresetToFile(CONFIG_FILE, preset);
+                        log(`Dashboard: preset "${preset.name}" applied to helper-config.json (helper not running).`);
+                        return reply({ ok: true, message: "The helper isn't running - the preset is used from its next start." });
+                    }
+
+                    reply({ ok: false, message: "Unknown preset action." });
+                } catch (err) {
+                    reply({ ok: false, message: err.message });
+                }
+            });
+            return;
+        }
+
+        if (url.pathname === "/history" && req.method === "GET") {
+            res.writeHead(200, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ items: uploadHistory.read() }));
+            return;
+        }
+
+        if (url.pathname === "/history/clear" && req.method === "POST") {
+            try { uploadHistory.clear(); } catch (err) { log(`Could not clear the upload history: ${err.message}`); }
+            res.writeHead(200, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ ok: true }));
+            return;
+        }
+
+        if (url.pathname === "/history/delete" && req.method === "POST") {
+            let body = "";
+            req.on("data", chunk => { body += chunk; });
+            req.on("end", () => {
+                let removed = false;
+                try { removed = uploadHistory.remove(String(JSON.parse(body || "{}").id || "")); } catch {}
+                res.writeHead(200, { "Content-Type": "application/json" });
+                res.end(JSON.stringify({ ok: removed }));
+            });
+            return;
+        }
+
+        if (url.pathname === "/accept-legal" && req.method === "POST") {
+            try {
+                let email = null;
+                try { email = JSON.parse(fs.readFileSync(path.join(APP_DIR, "license-cache.json"), "utf8")).email || null; } catch {}
+                legal.recordConsent(email);
+                res.writeHead(200, { "Content-Type": "application/json" });
+                res.end(JSON.stringify({ ok: true, consent: legal.consentSummary() }));
+            } catch (err) {
+                res.writeHead(200, { "Content-Type": "application/json" });
+                res.end(JSON.stringify({ ok: false, message: err.message }));
+            }
             return;
         }
 
@@ -2404,6 +3044,8 @@ function openDashboard(log = console.log, controls = {}) {
                         maxMs: Math.min(60000, Math.max(0, (p.throttle && p.throttle.maxMs) || 2000))
                     };
 
+                    cfg.compression = presetStore.sanitizeCompression(p.compression);
+
                     writeHelperConfig(cfg);
                     const restarted = restartIfRunning();
                     log(`Dashboard: settings saved${restartLogSuffix(restarted)}.`);
@@ -2486,19 +3128,13 @@ function openDashboard(log = console.log, controls = {}) {
                     if (parsed.plugin === "ppro") {
                         const status = readEngineStatus();
                         const tier = status && status.tier;
-                        if (tier && !DRIVE_TIERS.has(tier)) throw new Error("The Premiere Pro panel is a Pro feature — upgrade your tier to install it.");
-                    }
-                    if (plugin.kind === "upia") {
-                        upia.installCcx(plugin.ccx, log, (ok, message) => {
-                            if (ok) setTimeout(() => refreshPsInstallStatus(log), 1500);
-                            res.writeHead(200, { "Content-Type": "application/json" });
-                            res.end(JSON.stringify(ok ? { ok: true } : { ok: false, message }));
-                        });
-                        return;
+                        const hasSpt = !!(status && Array.isArray(status.roles) && status.roles.indexOf("spt") !== -1);
+                        if (tier && !DRIVE_TIERS.has(tier) && !hasSpt) throw new Error("The Premiere Pro panel needs a Pro license or the Spidx Thumbnail Pack.");
                     }
                     if (!fs.existsSync(plugin.installer)) throw new Error(`${plugin.label}: installer script not found next to the App folder.`);
                     log(`Dashboard: launching ${plugin.label} installer at "${plugin.installer}".`);
                     spawnBatFile(plugin.installer, log, (ok, message) => {
+                        if (ok && parsed.plugin === "ps") watchPsInstall(log);
                         res.writeHead(200, { "Content-Type": "application/json" });
                         res.end(JSON.stringify(ok ? { ok: true } : { ok: false, message: "Windows refused to start it: " + message }));
                     });
@@ -2518,17 +3154,10 @@ function openDashboard(log = console.log, controls = {}) {
                     const parsed = JSON.parse(body || "{}");
                     const plugin = PLUGINS[parsed.plugin];
                     if (!plugin) throw new Error("Unknown plugin.");
-                    if (plugin.kind === "upia") {
-                        upia.removeCcx(plugin.pluginId, log, (ok, message) => {
-                            if (ok) setTimeout(() => refreshPsInstallStatus(log), 1500);
-                            res.writeHead(200, { "Content-Type": "application/json" });
-                            res.end(JSON.stringify(ok ? { ok: true } : { ok: false, message }));
-                        });
-                        return;
-                    }
                     if (!fs.existsSync(plugin.uninstaller)) throw new Error(`${plugin.label}: uninstaller script not found next to the App folder.`);
                     log(`Dashboard: launching ${plugin.label} uninstaller at "${plugin.uninstaller}".`);
                     spawnBatFile(plugin.uninstaller, log, (ok, message) => {
+                        if (ok && parsed.plugin === "ps") watchPsInstall(log);
                         res.writeHead(200, { "Content-Type": "application/json" });
                         res.end(JSON.stringify(ok ? { ok: true } : { ok: false, message: "Windows refused to start it: " + message }));
                     });

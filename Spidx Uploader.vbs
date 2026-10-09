@@ -20,4 +20,4 @@ If Not fso.FileExists(batPath) Then
 End If
 
 shell.CurrentDirectory = appDir
-shell.Run """" & batPath & """", 0, False
+shell.Run """" & batPath & """ hidden", 0, False
