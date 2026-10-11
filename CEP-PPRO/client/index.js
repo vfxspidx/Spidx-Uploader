@@ -342,6 +342,12 @@ function currentRoleList() {
     return currentRoles.length ? currentRoles : (currentTier ? [currentTier] : []);
 }
 
+// Properties (Essential Graphics text) and filling the nick into a MOGRT: Pro-level ranks, OR the "spt" role
+// (the Spidx Thumbnail Pack). Everything else that is Pro (batches, Photoshop + Upload) stays Pro-only.
+function tierAllowsProperties() {
+    return tierAllowsProFeatures() || currentRoleList().indexOf("spt") !== -1;
+}
+
 function tierAllowsMogrt() {
     var roles = currentRoleList();
     for (var i = 0; i < SPT_ROLES.length; i++) {
@@ -381,9 +387,9 @@ function updateMogrtLock() {
 // changes; also called once on load once currentTier is known.
 function updateProFeatureLocks() {
     if (!tabBtnProps) return;
-    var locked = !tierAllowsProFeatures();
+    var locked = !tierAllowsProperties();
     tabBtnProps.classList.toggle("locked", locked);
-    tabBtnProps.title = locked ? "Properties is a Pro feature — upgrade to use it." : "";
+    tabBtnProps.title = locked ? "Properties needs a Pro license or the Spidx Thumbnail Pack." : "";
     // Don't strand the user on a tab that just got locked out from under them.
     if (locked && currentTab === "tabProps") activateTab("tabUploader");
 }
@@ -748,8 +754,8 @@ var tabButtons = document.querySelectorAll(".tab-btn");
 var currentTab = "tabUploader";
 
 function activateTab(target) {
-    if (target === "tabProps" && !tierAllowsProFeatures()) {
-        setCard("Properties is Pro", "Upgrade your tier to edit Essential Graphics text properties from here.", "error");
+    if (target === "tabProps" && !tierAllowsProperties()) {
+        setCard("Properties is locked", "Properties needs a Pro license or the Spidx Thumbnail Pack to edit Essential Graphics text from here.", "error");
         return;
     }
     currentTab = target;
@@ -1341,7 +1347,7 @@ function mogrtInsert(item, tile) {
     }
 
     // nick fill uses the same Pro gate as the Properties tab
-    evalScript("spidxInsertMogrt(" + esArg(item.file) + ", " + esArg(nick) + ", " + esArg(tierAllowsProFeatures() ? "true" : "false") + ", " + esArg(extensionPath()) + ", " + esArg(item.textParam || "") + ")")
+    evalScript("spidxInsertMogrt(" + esArg(item.file) + ", " + esArg(nick) + ", " + esArg(tierAllowsProperties() ? "true" : "false") + ", " + esArg(extensionPath()) + ", " + esArg(item.textParam || "") + ")")
         .then(function (result) {
             var msg = "Inserted \"" + (item.name || item.file) + "\" on " + result.track + " at the playhead";
             if (result.textApplied) msg += " with \"" + nick + "\"";

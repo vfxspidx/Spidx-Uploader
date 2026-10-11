@@ -43,6 +43,7 @@ const CEP_EXTENSIONS_DIR = path.join(process.env.APPDATA || "", "Adobe", "CEP", 
 const upia = require("./upia.js");
 const diagnostics = require("./diagnostics.js");
 const legal = require("./legal.js");
+const brand = require("./brand.js");
 const uploadHistory = require("./history.js");
 const presetStore = require("./presets.js");
 const hotkey = require("./hotkey.js");
@@ -450,6 +451,7 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Spidx Uploader — Dashboard</title>
+<link rel="icon" type="image/png" href="${brand.FAVICON}">
 <style>
     :root {
         --bg: #000000;
@@ -500,6 +502,7 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
         font-size: 17px; font-weight: 700; letter-spacing: -.03em; color: #fff;
         box-shadow: none;
     }
+    .mark-img { width: 36px; height: 36px; border-radius: 11px; flex-shrink: 0; display: block; }
     .brand { display: flex; flex-direction: column; gap: 2px; margin-right: auto; }
     .brand b { font-size: 15px; font-weight: 700; letter-spacing: -.01em; }
     .brand span { font-size: 11.5px; color: var(--text-faint); }
@@ -781,7 +784,7 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
 <div class="wrap">
 
     <div class="topbar">
-        <div class="mark">S</div>
+        <img class="mark-img" src="${brand.LOGO}" alt="Spidx Uploader" width="36" height="36">
         <div class="brand">
             <b>Spidx Uploader</b>
             <span>Dashboard</span>
@@ -1007,7 +1010,7 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
 
         <div class="card" id="legalCard">
             <h2>Support &amp; legal</h2>
-            <p class="desc" id="supportLine">Questions or a bug to report? <a href="#" id="supportLink" style="display:none;">Contact support</a><span id="supportFallback">— link not set up yet.</span></p>
+            <p class="desc" id="supportLine">Questions or a bug to report? Write to <a href="mailto:${legal.SUPPORT_EMAIL}?subject=Spidx%20Uploader%20support" id="supportLink">${legal.SUPPORT_EMAIL}</a> <button type="button" class="btn ghost" id="copySupportBtn" style="margin-left: 6px;">Copy address</button> <span id="copySupportNote" style="color: var(--text-faint); font-size: 12px;"></span><br>Please attach a diagnostics file (Account &rarr; Diagnostics &rarr; Create diagnostics file) - it helps a lot.</p>
             <p class="desc" style="margin-bottom: 0;">The Terms of Service say how Spidx Uploader may be used, the EULA is the software licence, and the Privacy Policy explains what is sent where (sign-in and license check, uploads, update checks) and what stays on your computer. Refunds and the Thumbnail Pack licence have their own pages.</p>
             <p class="desc" id="consentLine" style="margin: 12px 0 0;"></p>
             <div class="legal-row">
@@ -2112,16 +2115,16 @@ $("makeDiagBtn").addEventListener("click", async function () {
     btn.disabled = false;
 });
 
-// TODO: point this at your real Discord/support URL.
-// Set this to your real Discord/support URL, then this card switches
-// from the "not set up yet" fallback text to a working link on its own.
-var SUPPORT_URL = ""; // e.g. "https://discord.gg/yourInvite"
-if (SUPPORT_URL) {
-    $("supportLink").href = SUPPORT_URL;
-    $("supportLink").target = "_blank";
-    $("supportLink").style.display = "";
-    $("supportFallback").style.display = "none";
-}
+// Support: the address is a mailto link; many people have no mail program, so "Copy address" is there too.
+$("copySupportBtn").addEventListener("click", function () {
+    var address = $("supportLink").textContent;
+    function done(ok) { $("copySupportNote").textContent = ok ? "Copied." : "Copy failed - select the address and copy it."; }
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(address).then(function () { done(true); }, function () { done(false); });
+    } else {
+        done(false);
+    }
+});
 
 function describeTier(result) {
     if (!result.tier) return "";

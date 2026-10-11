@@ -18,9 +18,14 @@
 ;          CEP-PPRO\                 (Premiere Pro panel)
 ;          VEGAS-Plugin\             (VEGAS Pro plugin: C# source + installer
 ;                                     scripts; built on the user's machine)
+;          Hotkey\                   (global shortcut: SpidxHotkey.cs, built on first use)
 ;          Spidx Uploader.vbs
 ;          README.txt
 ;          Installer\SpidxUploader.iss   <- this file
+;
+;  The installer does NOT install the Adobe / VEGAS panels. It ships them in {app} and the
+;  first-run setup page (or Dashboard > Account > Plugins) installs them, with the elevated
+;  scripts that sit next to them. (The Photoshop step used to stall the installer.)
 ;
 ;  Installs per-user into %LOCALAPPDATA%\Programs — deliberately NOT
 ;  Program Files: the helper writes its own config, logs, queue, browser
@@ -72,11 +77,6 @@ Name: "polish";  MessagesFile: "compiler:Languages\Polish.isl"
 [Tasks]
 Name: "desktopicon";  Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"
 Name: "autostart";    Description: "Start Spidx Uploader when I sign in to Windows"
-Name: "aepanel";      Description: "Install the After Effects panel (close After Effects first)"
-Name: "pprpanel";     Description: "Install the Premiere Pro panel (close Premiere Pro first)"
-Name: "vegaspanel";   Description: "Install the VEGAS Pro plugin (close VEGAS first; it is built for your VEGAS version)"; Flags: unchecked
-Name: "pspanel";      Description: "Install the Photoshop panel (requires Creative Cloud desktop app, close Photoshop first)"
-Name: "launchafter";  Description: "Start Spidx Uploader when setup finishes"; Flags: unchecked
 
 [Files]
 ; ---- helper / engine ----
@@ -84,34 +84,22 @@ Source: "..\App\*";    DestDir: "{app}\App";    Flags: ignoreversion recursesubd
     Excludes: "node_modules\*,incoming\*,browser-profile\*,helper.log,helper-events.jsonl,queue.json,helper-state.json,license-cache.json,google-token.json,last-upload.json,device-id.json,.pending-license-code,.tray.pid,diagnostics\*,update-cache.json,plugin-updates-cache.json,consent.json,upload-history.json"
 ; ---- Photoshop (UXP) panel: ONLY the packaged .ccx ships -- the raw UXP
 ; source folder is intentionally left out of the installer entirely.
-; Always shipped (not only with the "pspanel" task) so the Dashboard / wizard can install the
-; panel later with the elevated scripts next to it.
+; The Windows installer does NOT install any panel (the Photoshop step used to stall setup).
+; Panels are installed from the setup page that opens at the end, or later from
+; Dashboard > Account > Plugins, with the elevated scripts that ship next to the files.
 Source: "..\UXP\{#UxpCcxFile}"; DestDir: "{app}\UXP"; Flags: ignoreversion skipifsourcedoesntexist
 Source: "..\UXP\Install PS Panel.bat"; DestDir: "{app}\UXP"; Flags: ignoreversion skipifsourcedoesntexist
 Source: "..\UXP\Uninstall PS Panel.bat"; DestDir: "{app}\UXP"; Flags: ignoreversion skipifsourcedoesntexist
-; ---- After Effects (CEP) panel: kept in {app} for reference ... ----
+; ---- After Effects (CEP) panel: shipped in {app}, installed from the setup page / Dashboard ----
 Source: "..\CEP-AE\*"; DestDir: "{app}\CEP-AE"; Flags: ignoreversion recursesubdirs createallsubdirs
-; ---- ... and installed straight into the CEP extensions folder ----
-Source: "..\CEP-AE\CSXS\*";   DestDir: "{userappdata}\Adobe\CEP\extensions\{#CepExtIdAE}\CSXS";   Flags: ignoreversion recursesubdirs createallsubdirs; Tasks: aepanel
-Source: "..\CEP-AE\client\*"; DestDir: "{userappdata}\Adobe\CEP\extensions\{#CepExtIdAE}\client"; Flags: ignoreversion recursesubdirs createallsubdirs; Tasks: aepanel
-Source: "..\CEP-AE\host\*";   DestDir: "{userappdata}\Adobe\CEP\extensions\{#CepExtIdAE}\host";   Flags: ignoreversion recursesubdirs createallsubdirs; Tasks: aepanel
-Source: "..\CEP-AE\icons\*";  DestDir: "{userappdata}\Adobe\CEP\extensions\{#CepExtIdAE}\icons";  Flags: ignoreversion recursesubdirs createallsubdirs; Tasks: aepanel
-; ---- Premiere Pro (CEP) panel: same pattern as the AE panel above ----
+; ---- Premiere Pro (CEP) panel: same as the AE panel (includes presets\ and mogrts\) ----
 Source: "..\CEP-PPRO\*";          DestDir: "{app}\CEP-PPRO"; Flags: ignoreversion recursesubdirs createallsubdirs
-Source: "..\CEP-PPRO\CSXS\*";     DestDir: "{userappdata}\Adobe\CEP\extensions\{#CepExtIdPPro}\CSXS";     Flags: ignoreversion recursesubdirs createallsubdirs; Tasks: pprpanel
-Source: "..\CEP-PPRO\client\*";   DestDir: "{userappdata}\Adobe\CEP\extensions\{#CepExtIdPPro}\client";   Flags: ignoreversion recursesubdirs createallsubdirs; Tasks: pprpanel
-Source: "..\CEP-PPRO\host\*";     DestDir: "{userappdata}\Adobe\CEP\extensions\{#CepExtIdPPro}\host";     Flags: ignoreversion recursesubdirs createallsubdirs; Tasks: pprpanel
-Source: "..\CEP-PPRO\icons\*";    DestDir: "{userappdata}\Adobe\CEP\extensions\{#CepExtIdPPro}\icons";    Flags: ignoreversion recursesubdirs createallsubdirs; Tasks: pprpanel
-Source: "..\CEP-PPRO\presets\*";  DestDir: "{userappdata}\Adobe\CEP\extensions\{#CepExtIdPPro}\presets";  Flags: ignoreversion recursesubdirs createallsubdirs skipifsourcedoesntexist; Tasks: pprpanel
-; The MOGRT tab's bundled templates + mogrts.json. This line was missing, so a panel installed
-; by the Windows installer had NO templates (the .bat installer already copied this folder).
-Source: "..\CEP-PPRO\mogrts\*";   DestDir: "{userappdata}\Adobe\CEP\extensions\{#CepExtIdPPro}\mogrts";   Flags: ignoreversion recursesubdirs createallsubdirs skipifsourcedoesntexist; Tasks: pprpanel
 ; ---- Global shortcut: only the C# SOURCE ships; App\hotkey.js builds SpidxHotkey.exe with csc.exe on first use. ----
 Source: "..\Hotkey\*.cs"; DestDir: "{app}\Hotkey"; Flags: ignoreversion
 Source: "..\Hotkey\README.txt"; DestDir: "{app}\Hotkey"; Flags: ignoreversion skipifsourcedoesntexist
 ; ---- VEGAS Pro plugin: the C# source + install scripts ship in {app}; the
-; "vegaspanel" task below (or the wizard / Dashboard) builds and installs the
-; .dll against whatever VEGAS the user has, so there is no prebuilt binary. ----
+; setup page / Dashboard builds and installs the .dll against whatever VEGAS the
+; user has, so there is no prebuilt binary. ----
 Source: "..\VEGAS-Plugin\*"; DestDir: "{app}\VEGAS-Plugin"; Flags: ignoreversion recursesubdirs createallsubdirs
 ; ---- launchers + docs ----
 Source: "..\{#AppExeVbs}";                DestDir: "{app}"; Flags: ignoreversion
@@ -128,18 +116,8 @@ Source: "..\THIRD-PARTY-NOTICES.txt";      DestDir: "{app}"; Flags: ignoreversio
 Name: "{app}\App\incoming"
 
 [Registry]
-; Unsigned CEP panels only load with PlayerDebugMode on. Per-user key, no
-; elevation, and CSXS versions are enumerated because which one After
-; Effects/Premiere Pro reads depends on its release. One shared set of
-; keys covers both panels — PlayerDebugMode isn't per-extension. (The
-; Photoshop panel doesn't need this: it's UXP, installed as a proper
-; signed-format .ccx via UPIA below, not sideloaded like CEP.)
-Root: HKCU; Subkey: "Software\Adobe\CSXS.8";  ValueType: string; ValueName: "PlayerDebugMode"; ValueData: "1"; Flags: uninsdeletevalue; Tasks: aepanel or pprpanel
-Root: HKCU; Subkey: "Software\Adobe\CSXS.9";  ValueType: string; ValueName: "PlayerDebugMode"; ValueData: "1"; Flags: uninsdeletevalue; Tasks: aepanel or pprpanel
-Root: HKCU; Subkey: "Software\Adobe\CSXS.10"; ValueType: string; ValueName: "PlayerDebugMode"; ValueData: "1"; Flags: uninsdeletevalue; Tasks: aepanel or pprpanel
-Root: HKCU; Subkey: "Software\Adobe\CSXS.11"; ValueType: string; ValueName: "PlayerDebugMode"; ValueData: "1"; Flags: uninsdeletevalue; Tasks: aepanel or pprpanel
-Root: HKCU; Subkey: "Software\Adobe\CSXS.12"; ValueType: string; ValueName: "PlayerDebugMode"; ValueData: "1"; Flags: uninsdeletevalue; Tasks: aepanel or pprpanel
-Root: HKCU; Subkey: "Software\Adobe\CSXS.13"; ValueType: string; ValueName: "PlayerDebugMode"; ValueData: "1"; Flags: uninsdeletevalue; Tasks: aepanel or pprpanel
+; Unsigned CEP panels only load with PlayerDebugMode on. That per-user key is set by the panel
+; installers themselves (Install AE Panel.bat / Install PPRO Panel.bat), not by this script.
 
 ; "spidx://" deep link — lets the Discord bot's "Activate" button open this
 ; app directly with a license code pre-filled (see App\protocol-handler.js
@@ -160,23 +138,12 @@ Name: "{autodesktop}\{#AppName}";       Filename: "{app}\{#AppExeVbs}"; IconFile
 Name: "{userstartup}\{#AppName}";       Filename: "{app}\{#AppExeVbs}"; IconFilename: "{app}\App\tray-icon.ico"; Tasks: autostart
 
 [Run]
-; Install the Photoshop panel via Adobe's own silent installer (UPIA).
-; Runs before start-tray.bat so the panel is already in place the first
-; time the user opens Photoshop after setup.
-Filename: "{code:GetUPIAPath}"; Parameters: "/install ""{app}\UXP\{#UxpCcxFile}"""; \
-    StatusMsg: "Installing Photoshop panel..."; Flags: runhidden skipifdoesntexist; Tasks: pspanel
-
-; Build + install the VEGAS Pro plugin (the .bat asks for admin rights itself and
-; shows its own console so errors are visible).
-Filename: "{app}\VEGAS-Plugin\Install VEGAS Plugin.bat"; WorkingDir: "{app}\VEGAS-Plugin"; \
-    StatusMsg: "Installing the VEGAS Pro plugin..."; Flags: shellexec waituntilterminated skipifdoesntexist; Tasks: vegaspanel
-
 ; First launch runs the visible batch once: it installs the npm
 ; dependencies (playwright, sharp, systray) and then hands over to the
 ; tray app, which opens the first-run wizard in the browser.
 Filename: "{app}\App\start-tray.bat"; WorkingDir: "{app}\App"; \
-    Description: "Finish setup (installs dependencies, then opens the wizard)"; \
-    Flags: postinstall shellexec skipifsilent; Tasks: launchafter
+    Description: "Open Spidx Uploader now (installs dependencies, then opens the setup page where you connect your panels)"; \
+    Flags: postinstall shellexec skipifsilent
 
 [UninstallRun]
 ; Mirror image of the [Run] entry above -- removes the Photoshop panel
@@ -364,11 +331,6 @@ begin
   Result := P;
 end;
 
-function UPIAInstalled(): Boolean;
-begin
-  Result := FileExists(GetUPIAPath(''));
-end;
-
 function InitializeSetup(): Boolean;
 var
   ErrorCode: Integer;
@@ -385,46 +347,6 @@ begin
             '(You can continue the installation either way and install Node.js afterwards.)',
             mbConfirmation, MB_YESNO) = IDYES then
     ShellExec('open', 'https://nodejs.org/en/download', '', '', SW_SHOW, ewNoWait, ErrorCode);
-end;
-
-// Warn up front if "Install the Photoshop panel" is ticked but UPIA isn't
-// present, instead of letting [Run] fail silently (Flags: skipifdoesntexist
-// just skips it with no explanation). Checked on the tasks-selection page.
-function NextButtonClick(CurPageID: Integer): Boolean;
-begin
-  Result := True;
-  if (CurPageID = wpSelectTasks) and WizardIsTaskSelected('pspanel') and not UPIAInstalled() then
-  begin
-    if MsgBox('The Photoshop panel installs through Adobe''s own plugin installer (UPIA), ' +
-              'which is part of the Creative Cloud desktop app -- and it wasn''t found on ' +
-              'this computer.' + #13#10#13#10 +
-              'Continue anyway? The Photoshop panel step will just be skipped; you can ' +
-              'install it later once Creative Cloud desktop is installed by running this ' +
-              'setup again.', mbConfirmation, MB_YESNO) = IDNO then
-      Result := False;
-  end;
-end;
-
-// After Effects / Premiere Pro both hold their CEP extensions open; copying
-// over a running instance produces a half-updated panel that silently
-// fails to load. Photoshop's UXP install via UPIA is more tolerant, but we
-// still ask for it closed since it needs a restart to pick up the panel
-// either way.
-function PrepareToInstall(var NeedsRestart: Boolean): String;
-begin
-  Result := '';
-  if WizardIsTaskSelected('aepanel') and (FindWindowByClassName('AE_CApplication_Class') <> 0) then
-  begin
-    Result := 'After Effects is running. Close it and click Retry, or go back and untick the After Effects panel task.';
-    Exit;
-  end;
-  if WizardIsTaskSelected('pprpanel') and (FindWindowByClassName('Premiere Pro') <> 0) then
-  begin
-    Result := 'Premiere Pro is running. Close it and click Retry, or go back and untick the Premiere Pro panel task.';
-    Exit;
-  end;
-  if WizardIsTaskSelected('pspanel') and (FindWindowByClassName('Photoshop') <> 0) then
-    Result := 'Photoshop is running. Close it and click Retry, or go back and untick the Photoshop panel task.';
 end;
 
 // ============================================================================

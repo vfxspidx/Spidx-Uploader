@@ -53,6 +53,8 @@ var PRO_FEATURE_TIERS = MULTI_BATCH_TIERS;
 var incomingPath = localStorage.getItem(FOLDER_KEY) || "";
 var selectedBatchCount = 1;
 var currentTier = null;
+var currentRoles = [];      // every role of the licence, e.g. ["free","spt"] (the helper sends them next to the rank)
+var currentRolesKey = "";
 var currentDestination = "workupload";
 var currentDeviceLimitReached = false;
 var lastBatchState = null;
@@ -230,9 +232,14 @@ function tierAllowsProFeatures() {
     return PRO_FEATURE_TIERS.indexOf(currentTier) !== -1;
 }
 
+// Replace Text: Pro-level ranks OR the "spt" role (the Spidx Thumbnail Pack).
+function tierAllowsReplaceText() {
+    return tierAllowsProFeatures() || currentRoles.indexOf("spt") !== -1;
+}
+
 function updateProFeatureLocks() {
-    var allowed = tierAllowsProFeatures();
-    lbInsertBtn.title = allowed ? "" : "Replace Text is a Pro feature — upgrade to use it.";
+    var allowed = tierAllowsReplaceText();
+    lbInsertBtn.title = allowed ? "" : "Replace Text needs a Pro license or the Spidx Thumbnail Pack.";
     // Don't grant a button that a mid-session tier drop should have revoked.
     if (!allowed) lbInsertBtn.disabled = true;
 }
@@ -341,8 +348,14 @@ function applyEngineStatus(status) {
     currentDeviceLimitReached = !!status.deviceLimitReached;
 
     var tier = typeof status.tier === "string" ? status.tier : null;
-    if (tier !== currentTier) {
+    var roles = (status.roles && typeof status.roles.length === "number")
+        ? Array.prototype.slice.call(status.roles).map(String)
+        : (tier ? [tier] : []);
+    var rolesKey = roles.join("+");
+    if (tier !== currentTier || rolesKey !== currentRolesKey) {
         currentTier = tier;
+        currentRoles = roles;
+        currentRolesKey = rolesKey;
         if (!tierAllowsMultiBatch() && selectedBatchCount > 1) setSelectedBatchCount(1);
         setBatchControlsLocked(false);
         updateProFeatureLocks();
@@ -350,7 +363,9 @@ function applyEngineStatus(status) {
 
     tierBadge.className = "tier-badge" + (tier ? " show tier-" + tier : "");
     if (tier) {
-        tierBadge.textContent = tier.toUpperCase()
+        // "SPT" or "PRO + SPT" when the licence carries more than the rank
+        var shownRoles = roles.filter(function (r) { return r !== "free" || roles.length === 1; });
+        tierBadge.textContent = (shownRoles.length ? shownRoles.join(" + ") : tier).toUpperCase()
             + (status.trialDaysRemaining ? " (" + status.trialDaysRemaining + "D)" : "");
     }
 
@@ -681,7 +696,7 @@ function lbSelectRow(idx) {
     var items = lbRows.querySelectorAll(".lb-item");
     for (var i = 0; i < items.length; i++) items[i].classList.toggle("selected", i === idx);
     lbCopyBtn.disabled = false;
-    lbInsertBtn.disabled = !tierAllowsProFeatures();
+    lbInsertBtn.disabled = !tierAllowsReplaceText();
 }
 
 function lbSelectedPlayer() {
@@ -766,8 +781,8 @@ lbCopyBtn.addEventListener("click", function () {
 });
 
 lbInsertBtn.addEventListener("click", function () {
-    if (!tierAllowsProFeatures()) {
-        lbMessage.textContent = "Replace Text is a Pro feature — upgrade to use it.";
+    if (!tierAllowsReplaceText()) {
+        lbMessage.textContent = "Replace Text needs a Pro license or the Spidx Thumbnail Pack.";
         lbMessage.className = "card-sub error";
         return;
     }

@@ -18,6 +18,9 @@ const CONSENT_FILE = path.join(__dirname, "consent.json");
 // Bump when the Terms, EULA or Privacy Policy on spidxuploader.com change materially (must equal the "Last updated" date).
 const LEGAL_VERSION = "2026-10-09";
 
+// The one address shown to users for support (Dashboard) - change it here only.
+const SUPPORT_EMAIL = "contact@spidxuploader.com";
+
 const LEGAL_URLS = {
     terms: "https://spidxuploader.com/terms",
     eula: "https://spidxuploader.com/eula",
@@ -65,4 +68,4 @@ function consentSummary() {
     };
 }
 
-module.exports = { LEGAL_VERSION, LEGAL_URLS, readConsent, hasValidConsent, recordConsent, attachEmail, consentSummary };
+module.exports = { LEGAL_VERSION, LEGAL_URLS, SUPPORT_EMAIL, readConsent, hasValidConsent, recordConsent, attachEmail, consentSummary };

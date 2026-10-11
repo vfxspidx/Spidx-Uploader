@@ -40,6 +40,7 @@ const PS_INSTALLER_BAT = path.join(APP_DIR, "..", "UXP", "Install PS Panel.bat")
 const UXP_PLUGIN_ID = "com.spidx.workupload"; // must match the .ccx's manifest.json "id"
 const upia = require("./upia.js");
 const legal = require("./legal.js");
+const brand = require("./brand.js");
 const DRIVE_TIERS = new Set(["pro", "dev", "tester"]);
 
 // What the wizard already knows before anything is clicked: whether a
@@ -145,6 +146,7 @@ const WIZARD_HTML = `<!DOCTYPE html>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Spidx Uploader — Setup</title>
+<link rel="icon" type="image/png" href="${brand.FAVICON}">
 <style>
     :root {
         --bg: #000000;
@@ -187,6 +189,7 @@ const WIZARD_HTML = `<!DOCTYPE html>
     @keyframes rise { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: none; } }
 
     .brand { display: flex; align-items: center; gap: 9px; margin-bottom: 20px; }
+    .mark-img { width: 30px; height: 30px; border-radius: 9px; display: block; }
     .mark {
         width: 30px; height: 30px; border-radius: 9px;
         background: linear-gradient(160deg, #0a84ff, #0060df);
@@ -357,7 +360,7 @@ const WIZARD_HTML = `<!DOCTYPE html>
 <body>
 <div class="card">
     <div class="brand">
-        <div class="mark">S</div>
+        <img class="mark-img" src="${brand.LOGO}" alt="Spidx Uploader" width="30" height="30">
         <b>Spidx Uploader</b>
         <span class="tier-chip" id="tierChip"></span>
     </div>
