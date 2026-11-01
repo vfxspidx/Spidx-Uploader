@@ -1,94 +1,34 @@
-# Spidx Uploader 2.8.0 — what's new
+# Spidx Uploader 3.0.0 - what's new
 
-**In short:** send a frame with one keyboard shortcut, switch between clients with presets, see every upload in a history, and a brand-new template browser in the Premiere Pro panel. Plus a lot of fixes that make installing and updating the panels smoother.
+**In short:** the new SE 3 engine. Render videos straight from Premiere Pro or VEGAS Pro and upload them to Google Drive or WorkUpload, and the whole Dashboard now speaks 9 languages.
 
----
+## New
+- **Render & upload video** (Premiere Pro, VEGAS Pro): pick your own render preset/template, the host renders (no extra compression), the helper uploads the finished file. Clips from 1 s to 30 min.
+- **Resumable Google Drive upload** for big files: live progress and speed in the Dashboard, Cancel button, survives network drops, and continues after a restart or crash.
+- **Languages:** English, Polish, German, French, Spanish, Portuguese (BR), Italian, Turkish, Russian - Dashboard, setup wizard, tray. Change in Dashboard → Language (Auto = Windows language).
+- Video files are only picked up once fully written, so half-rendered files are never uploaded.
+- **Dashboard rebuilt:** side menu (Overview, History, Activity, Templates, Settings, Status, Account), live status hero, recent uploads, History with thumbnails and filters, searchable Settings with autosave, Status page with health checks and a copyable report, light/dark theme, banner when a new app version or newer panels are available.
+- **Templates (Dashboard):** add .aep files and map each composition + text layer to a template without editing `templates.json`; the After Effects SPT tab re-reads the list every time it opens.
+- **Leaderboard** now goes through the helper, so the After Effects / Premiere panels no longer run with Chromium's web security disabled (`--disable-web-security` is gone). The helper has to be running for the Leaderboard to load.
+- **Render (After Effects / Premiere):** names with spaces no longer make the render look like it produced no file, a live clock shows while the host app is busy, and errors now say what AE or Premiere reported.
+- **Licence proof bound to the computer:** with the RSA key installed the app also requires a second signature that is only valid on the computer it was issued to, so a licence file copied to another PC does not work. Proofs are valid 14 days offline.
+- **Updater window:** a small app-style window (open it from the tray's "Update available" item, or Dashboard > Account > Open the updater) that checks the version, downloads the installer with progress and a Cancel button, starts it, and can check and repair the installed panels.
+- **Render allowance counted on the server:** the free plan's 15 renders a month are now counted by the licence server per Google account and per computer (signed answers; 3 renders per month are let through offline and reported later). `render-usage.json` is only a cache of the server's answer.
+- **Batches are for thumbnails only:** while "Files per upload" is 2 or 3, or a batch is being collected, "Render & upload" is blocked in the After Effects, Premiere Pro and VEGAS Pro panels (with a note saying why). A rendered video is always its own upload and never joins a batch of stills.
+- **WorkUpload survives a closed tab:** if the WorkUpload tab or browser window is closed during an upload, the helper notices at once (the waiting loops used to poll a dead page for minutes, or for hours with a big video), opens a new tab and starts the upload again without using up a retry (up to 3 times). An upload that still fails is remembered and can be sent again with the "Retry now" button on the Dashboard Overview; the files are never deleted by a failure. A tab you open yourself no longer gets taken over by the helper.
+- **Thumbnail Pack content is delivered by the server, not the installer:** the After Effects templates and presets and the Premiere Pro MOGRT templates are no longer inside the installer or the panels. The licence server gives them only to an account that has the Pack (role SPT, or dev / tester) and only to one of its registered computers; the helper downloads them into `%APPDATA%\Spidx Uploader\pack`, checks every file against a signed checksum, keeps them up to date and removes them if the account loses the Pack. Dashboard > Templates shows the state, has a Sync now button and keeps the user's own templates separate. Setup for the owner: `Tools\PACK-README.txt`.
+- **Panels in 9 languages:** the After Effects, Premiere Pro and VEGAS Pro panels now follow the language chosen in the Dashboard (the helper hands them the dictionary). Texts without a translation, and texts that contain names or numbers, stay in English.
+- **New look for the setup wizard and the installer:** the first-run wizard opens in its own app window with the same glass design as the Dashboard and the Updater, and the Inno installer has the new branding images.
+- **Clean-up:** the dead "needs Pro" messages for Premiere Pro and VEGAS Pro, an unused field in the VEGAS plugin and outdated README sentences were removed.
+- **VEGAS Pro panel size:** the panel now follows the screen's own scaling (100% = normal size, 125%, 150% ... scale with Windows) instead of a fixed 1.3x enlargement, so it is as big as VEGAS's own UI on any computer and the whole panel is about a quarter shorter. A manual override is `panelScale` in `%APPDATA%\Spidx Uploader\vegas-panel-config.json`; the old, automatically saved `uiScale` is ignored.
+- **VEGAS Pro panel in a narrow dock:** the header no longer cuts off the name (the plan badge shortens to "TESTER" and, in a very narrow dock, the name shrinks a little and the small "S" steps aside), and the "Photoshop + Upload" button wraps onto two lines ("PS + Upload" when even that does not fit) instead of being clipped.
+- **New plans:** the free plan now includes the Premiere Pro panel and the VEGAS Pro plugin, with 15 video renders per calendar month (Render & upload, counted across all apps; stills are not counted). Pro has unlimited renders and uploads. The Dashboard shows the count and warns before the limit; the panels warn before a render that would be refused. A video over the limit is moved to `incoming\rejected`, never deleted.
+- **New logo:** the gradient "S" is now the logo everywhere: Dashboard, setup wizard, tray, desktop shortcut and the After Effects and Premiere Pro panel icons (the Photoshop panel keeps its old icon until it is rebuilt).
+- Panels got the same glass look as the Dashboard. The Dashboard's HTML/CSS/JS moved out of `dashboard.js` into `App\dashboard-ui\`.
 
-## ✨ New
-
-### Send a frame with one shortcut
-Press **Ctrl+Alt+U** while After Effects, Premiere Pro, Photoshop or VEGAS Pro is in front and the current frame is uploaded — just like clicking *Upload* in the Spidx panel.
-**Ctrl+Alt+Shift+U** does the same through the Photoshop Camera Raw route (*Photoshop + Upload*, Pro).
-- Change or turn off the shortcut in **Dashboard → Settings → Global shortcut**.
-- Free for everyone.
-- The Spidx panel must be open in that program (*Window → Extensions*). If it isn't, you get a small message telling you so.
-
-### Client presets
-Save your current setup — destination, Google Drive folder, image compression and Camera Raw action — as a named preset (for example *"Client A"*), then switch with one click.
-- Manage presets in **Dashboard → Settings → Client presets**.
-- Switch right from the **After Effects** and **Premiere Pro** panels (new *Preset* list).
-- Shows **"Active (modified)"** if you changed a setting after applying a preset.
-- Free for everyone.
-
-### Upload history
-New **History** tab in the Dashboard: your latest uploads (up to 500) with links. Copy a link again, search by file name or client, remove entries, or clear the list. Stored only on your computer.
-
-### Premiere Pro: MOGRT templates (SPT add-on)
-A new **MOGRT** tab turns your motion graphics templates into a browser — thumbnails, categories (Eliminations, Damage…), search, and animated previews when you hover a template.
-- **Click a template** and it is placed at the playhead on a free video track above V1. It never touches your footage.
-- Type a nick (or click a player in the *Leaderboard* tab) and it is written into the graphic automatically (Pro).
-- Nothing to install in Premiere first.
-- Part of the **Spidx Thumbnail Pack V3** (sold separately; included for Dev and Tester roles). The Premiere Pro panel can be installed with a Pro License **or** with the Pack.
-
-### VEGAS Pro plugin is part of the app
-Install it from the setup wizard or **Dashboard → Account → Plugins**. It builds the plugin for your VEGAS version automatically. Uploading from VEGAS Pro needs a **Pro** plan.
-The VEGAS panel got a new look that matches the other panels, scales with the window and has smooth animations.
-
-### Image compression settings
-**Dashboard → Settings:** switch compression on or off and choose the target file size. Presets can use different sizes per client.
-
-### Terms of Service, EULA & Privacy Policy
-Links to the Terms, the End User License Agreement, the Privacy Policy and the Refund Policy are in the Dashboard (*Support & legal* and the footer on every tab). New installs accept them once in the setup wizard; existing users see a short banner. You are asked again only if the texts change.
-
-### Self-test & diagnostics
-**Dashboard → Account → Diagnostics** checks everything the uploader needs (Node, helper, folders, Google sign-in, license, internet, plugins) and tells you in plain words what is wrong. *Create diagnostics file* packs logs and versions for support — emails, tokens and your user name are removed. Also in the tray menu.
-
-### Plugin updates inside the app
-The Dashboard (and tray) tell you when a newer After Effects, Premiere Pro, VEGAS or Photoshop plugin is available and can download it. Then click *Update* next to the plugin.
-
-### Combined license roles
-A license can now carry several roles at once (for example **Pro + SPT**), shown in the Dashboard and the panels.
+## Notes
+- VEGAS render is new and needs a rebuild of the plugin (`build.bat`).
+- Panels (Premiere, After Effects, VEGAS, Photoshop) are still English-only for now.
 
 ---
 
-## 🔧 Improved
-- **Photoshop panel installer** now runs Adobe's installer as administrator and shows the real result. The minimum Photoshop version the panel asks for was lowered as well.
-- **Premiere Pro panel** remembers the incoming folder, batch size and other settings even after you update the panel, and finds the incoming folder by itself after a fresh install.
-- **Locked features stay locked** until the uploader knows your plan (2–3 files per upload, *Photoshop + Upload*, Properties).
-- **Safer license checks.** Edited or expired local license data is ignored. An optional stronger signature check can be switched on later without updating the app.
-- **Dashboard** footer shows the version; the Support card now lists your Terms and Privacy links.
-
-## 🐞 Fixed
-- The tray app sometimes refused to start ("already running") after a restart or crash, or left an invisible process behind.
-- A wrong menu item could run when an update notice appeared in the tray menu.
-- If the tray app failed to start without a window, nothing was shown — now you get a message.
-- Photoshop panel: the Dashboard could say *"installed"* when Adobe's installer had failed, or *"not installed"* right after a successful install. The After Effects panel (same name) was sometimes mistaken for it.
-- Premiere Pro panel: 2–3 files per upload and other Pro features could be used before the plan was known.
-- Premiere templates were copied to a folder Premiere doesn't read — they are inserted directly now.
-- VEGAS Pro panel: crash when changing the Leaderboard region, drop-down staying open, overlapping text on disabled buttons.
-- Windows installer: could end an unrelated program with a reused process number (now only the uploader's own), didn't include the Premiere templates, and failed to compile on newer Inno Setup.
-- Compiler messages for the VEGAS plugin and the shortcut program were unreadable on Polish Windows.
-
----
-
-## 📦 Versions in this release
-
-| Part | Version |
-|---|---|
-| Spidx Uploader (app + installer) | **2.8.0** |
-| After Effects panel | **2.8.0** |
-| Premiere Pro panel | **2.8.0** |
-| Photoshop panel | **2.8.0** |
-| VEGAS Pro plugin | **2.8.0** |
-
-## ⬆️ How to update
-1. Close After Effects, Premiere Pro, Photoshop and VEGAS Pro. Quit the Spidx tray app.
-2. Install the new version (or replace the files) and start **Spidx Uploader**.
-3. Open **Dashboard → Account → Plugins** and click **Update** next to each plugin (programs must be closed). Photoshop shows a Windows administrator prompt; restart Photoshop afterwards.
-4. In the Dashboard, read and accept the Terms of Service / Privacy Policy banner.
-
-## ℹ️ Good to know
-- The first start builds the small shortcut program (a few seconds). It uses a compiler that ships with Windows.
-- The shortcut works in programs that have the **new** Spidx panel — update all plugins.
-- Switching presets from the panel works in After Effects and Premiere Pro; in Photoshop and VEGAS Pro use the Dashboard.
-- Older VEGAS plugin versions are not covered by the Pro requirement — update the plugin.

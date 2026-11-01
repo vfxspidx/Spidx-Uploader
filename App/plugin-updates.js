@@ -1,4 +1,5 @@
 "use strict";
+const i18n = require("./i18n.js");
 
 /* ========================================================================
  *  Plugin updates
@@ -238,7 +239,7 @@ async function downloadPluginUpdates(keys, log = () => {}) {
     const current = await checkPluginUpdates(true);
     const wanted = current.updates.filter(u => !keys || keys.includes(u.key));
     if (wanted.length === 0) {
-        return { ok: !current.error, results: [], message: current.error ? `Could not check: ${current.error}` : "Everything is already up to date." };
+        return { ok: !current.error, results: [], message: current.error ? i18n.t("Could not check: {error}", { error: current.error }) : i18n.t("Everything is already up to date.") };
     }
     const results = [];
     for (const update of wanted) results.push(await applyOne(update, log));

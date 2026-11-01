@@ -4,16 +4,16 @@
  *  Update check
  *
  *  Checks GitHub Releases for a newer version than what's in package.json
- *  and caches the result so this only hits the network once a day —
+ *  and caches the result so this only hits the network once a day -
  *  GitHub's unauthenticated API is capped at 60 requests/hour per IP, and
  *  there's no reason to check more than once a day anyway.
  *
  *  REQUIRED SETUP: set REPO below to your GitHub "owner/repo" (a public
  *  repo whose Releases page has at least one published release, tagged
- *  like "v2.4.0" or "2.4.0"). Nothing else needs configuring — no token,
+ *  like "v2.4.0" or "2.4.0"). Nothing else needs configuring - no token,
  *  no secret, this only calls GitHub's public, unauthenticated API.
  *
- *  This module does NOT install anything — it only tells the tray app
+ *  This module does NOT install anything - it only tells the tray app
  *  there's a newer version, with a link to the release page. Actually
  *  downloading and swapping files is a separate, bigger project.
  * ==================================================================== */
@@ -28,7 +28,7 @@ const APP_DIR = __dirname;
 const PACKAGE_FILE = path.join(APP_DIR, "package.json");
 const CACHE_FILE = path.join(APP_DIR, "update-cache.json");
 
-// Public GitHub repo used for release/update checks — see update-check.js
+// Public GitHub repo used for release/update checks - see update-check.js
 // setup notes at the top of this file for how a build is published here.
 const REPO = "vfxspidx/Spidx-Uploader";
 
@@ -55,11 +55,11 @@ function writeCache(data) {
     try {
         fs.writeFileSync(CACHE_FILE, JSON.stringify(data), "utf8");
     } catch {
-        // Non-fatal — worst case we just check again next start.
+        // Non-fatal - worst case we just check again next start.
     }
 }
 
-// Bare-bones semver compare — good enough for "MAJOR.MINOR.PATCH" tags
+// Bare-bones semver compare - good enough for "MAJOR.MINOR.PATCH" tags
 // with an optional leading "v" ("v2.4.0", "2.4.0"). Anything with extra
 // suffixes (e.g. "-beta.1") sorts by its numeric prefix only.
 function isNewerVersion(latest, current) {
@@ -120,7 +120,7 @@ function fetchLatestRelease() {
     });
 }
 
-// Returns { hasUpdate, latestVersion, downloadUrl, checkedAt } — always,
+// Returns { hasUpdate, latestVersion, downloadUrl, checkedAt } - always,
 // even on failure (hasUpdate: false), so callers never need a try/catch.
 // Uses the on-disk cache instead of hitting the network if it's still
 // fresh (see CHECK_INTERVAL_MS above); pass force:true to bypass that
@@ -152,7 +152,7 @@ async function checkForUpdate(force = false) {
             checkedAt: Date.now()
         };
     } catch (err) {
-        // Network hiccup, rate limit, no releases published yet, etc. —
+        // Network hiccup, rate limit, no releases published yet, etc. -
         // fall back to the previous cached result if there is one, so a
         // transient failure doesn't flicker an existing "update
         // available" notice on and off.
@@ -177,9 +177,18 @@ function openReleasePage(url, log = () => {}) {
 }
 
 // Downloads a URL to destPath, following redirects manually (GitHub asset
-// URLs 302 to a signed S3/Azure URL — https.get does NOT follow redirects
+// URLs 302 to a signed S3/Azure URL - https.get does NOT follow redirects
 // on its own). onProgress(receivedBytes, totalBytes) is optional and
 // totalBytes may be 0 if the server doesn't send Content-Length.
+// The one download that may be running (the Updater window's Cancel button stops it).
+let activeDownload = null;
+function cancelDownload() {
+    if (!activeDownload) return false;
+    activeDownload.cancelled = true;
+    try { activeDownload.req.destroy(new Error("Cancelled")); } catch {}
+    return true;
+}
+
 function downloadFile(url, destPath, onProgress, redirectsLeft = 5) {
     return new Promise((resolve, reject) => {
         const lib = /^http:/i.test(url) ? http : https;
@@ -213,13 +222,14 @@ function downloadFile(url, destPath, onProgress, redirectsLeft = 5) {
             }
         );
         req.on("timeout", () => req.destroy(new Error("Download timed out.")));
-        req.on("error", reject);
+        req.on("error", err => { fs.unlink(destPath, () => {}); reject(err); });
+        activeDownload = { req, cancelled: false };
     });
 }
 
 // Downloads the installer for `info` (the object checkForUpdate() returns)
 // into the OS temp folder and launches it, un-elevated child spawned
-// detached so it keeps running after this process exits — the Inno Setup
+// detached so it keeps running after this process exits - the Inno Setup
 // installer itself asks Windows for admin (UAC) and, if it's set to check
 // for a running instance, prompts the user to close the app. This does
 // NOT close the helper for you; an active upload is left alone.
@@ -240,4 +250,4 @@ async function downloadAndRunInstaller(info, onProgress) {
     return destPath;
 }
 
-module.exports = { checkForUpdate, openReleasePage, downloadAndRunInstaller, isNewerVersion, downloadFile, REPO };
+module.exports = { checkForUpdate, openReleasePage, downloadAndRunInstaller, isNewerVersion, downloadFile, cancelDownload, REPO };

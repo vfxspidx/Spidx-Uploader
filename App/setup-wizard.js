@@ -11,7 +11,7 @@
  *  → done. tray.js awaits runSetupWizard() before starting server.js, so
  *  the actual helper never runs with an unconfigured account.
  *
- *  The UXP panel itself is untouched by this — it has no first-run logic
+ *  The UXP panel itself is untouched by this - it has no first-run logic
  *  at all, it just always assumes setup already happened (which, once
  *  this wizard has run once, it always has).
  * ==================================================================== */
@@ -41,12 +41,13 @@ const UXP_PLUGIN_ID = "com.spidx.workupload"; // must match the .ccx's manifest.
 const upia = require("./upia.js");
 const legal = require("./legal.js");
 const brand = require("./brand.js");
+const i18n = require("./i18n.js");
 const DRIVE_TIERS = new Set(["pro", "dev", "tester"]);
 
 // What the wizard already knows before anything is clicked: whether a
 // Google login is saved from a previous run and what tier it last
 // resolved to. Deliberately read off disk instead of calling
-// google-auth — touching that would kick off a real OAuth round trip
+// google-auth - touching that would kick off a real OAuth round trip
 // just to render step 1.
 function readKnownAccount() {
     if (!fs.existsSync(GOOGLE_TOKEN_FILE)) return { email: null, tier: null, roles: [] };
@@ -64,9 +65,10 @@ function readKnownAccount() {
 
 // The Premiere Pro panel may be installed with a Pro-level rank OR with the "spt" role (the Thumbnail Pack's
 // MOGRT tab lives in that panel). An unknown plan (nothing cached yet) is allowed, as before.
+// Since 3.0 the Premiere Pro panel is available on every plan (the free plan has a monthly video-render
+// allowance instead, see server.js). The function stays because several call sites still pass the plan.
 function pproAllowed(tier, roles) {
-    if (!tier) return true;
-    return DRIVE_TIERS.has(tier) || (Array.isArray(roles) && roles.indexOf("spt") !== -1);
+    return true;
 }
 
 function openFolder(target, log) {
@@ -83,7 +85,7 @@ function openFolder(target, log) {
 }
 
 // Spawns a .bat installer/uninstaller and only answers the HTTP request
-// once we actually know whether the OS accepted it — "spawn" fires once
+// once we actually know whether the OS accepted it - "spawn" fires once
 // the process really started, "error" fires on a real failure (e.g. the
 // path doesn't exist, or cmd.exe itself can't be found). Previously the
 // route replied ok:true the instant spawn() was *called*, which is why
@@ -105,7 +107,7 @@ function spawnBatFile(batPath, log, cb) {
         });
         child.on("exit", code => log(`${path.basename(batPath)} window closed (exit code ${code}).`));
         child.unref();
-        // Neither event fired within a beat — assume it worked rather than
+        // Neither event fired within a beat - assume it worked rather than
         // hang the request forever; the exit-code log line above still
         // catches this case after the fact.
         setTimeout(() => finish(true, null), 1200);
@@ -127,7 +129,7 @@ function writeHelperConfig(raw) {
 }
 
 // Same robust pattern as google-auth.js's openInBrowser: full path via
-// %SystemRoot% (not relying on PATH), and a mandatory "error" listener —
+// %SystemRoot% (not relying on PATH), and a mandatory "error" listener -
 // spawn() failures are async and would otherwise crash the caller.
 function openInBrowser(url, log) {
     try {
@@ -145,7 +147,7 @@ const WIZARD_HTML = `<!DOCTYPE html>
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Spidx Uploader — Setup</title>
+<title>Spidx Uploader - Setup</title>
 <link rel="icon" type="image/png" href="${brand.FAVICON}">
 <style>
     :root {
@@ -354,10 +356,86 @@ const WIZARD_HTML = `<!DOCTYPE html>
     .license-box input:focus { outline: none; border-color: var(--accent); }
     .license-box .btn { width: auto; padding: 9px 16px; margin: 0; }
     .center { text-align: center; }
+    #langSelect {
+        position: fixed; top: 14px; right: 16px; z-index: 5; max-width: 200px;
+        background: var(--surface-2); color: var(--text); border: 1px solid var(--line);
+        border-radius: 8px; padding: 6px 8px; font: inherit; font-size: 12px; cursor: pointer;
+    }
     .check { font-size: 42px; margin-bottom: 10px; }
+</style>
+<style>
+    /* ---- 3.0 look: glass window, animated logo, gradient buttons (same design as the Updater and the Dashboard) ---- */
+    :root { --glass: rgba(255,255,255,.06); --glass-strong: rgba(255,255,255,.11); --edge: rgba(255,255,255,.16); }
+    html, body { background: #07080d; }
+    body::before {
+        background:
+            radial-gradient(520px 360px at 12% 0%, rgba(10,132,255,.40), transparent 70%),
+            radial-gradient(460px 340px at 100% 18%, rgba(100,210,255,.18), transparent 70%),
+            radial-gradient(560px 400px at 70% 100%, rgba(138,92,255,.28), transparent 70%);
+        animation: drift 14s ease-in-out infinite alternate;
+    }
+    @keyframes drift { from { transform: translate3d(0,0,0) scale(1); } to { transform: translate3d(-18px,12px,0) scale(1.06); } }
+
+    .card {
+        width: 540px; border-radius: 28px; padding: 34px 36px 30px;
+        background: linear-gradient(180deg, rgba(34,38,52,.74), rgba(18,20,30,.78));
+        -webkit-backdrop-filter: blur(24px) saturate(150%); backdrop-filter: blur(24px) saturate(150%);
+        border: 1px solid var(--edge);
+        box-shadow: inset 0 1px 0 rgba(255,255,255,.18), 0 40px 90px -30px rgba(0,0,0,.9), 0 0 0 1px rgba(0,0,0,.35);
+        animation: cardIn .45s cubic-bezier(.2,.8,.2,1);
+    }
+    @keyframes cardIn { from { opacity: 0; transform: translateY(16px) scale(.985); } to { opacity: 1; transform: none; } }
+
+    .brand { gap: 12px; margin-bottom: 24px; }
+    .mark-img, .mark {
+        width: 40px; height: 40px; border-radius: 12px;
+        box-shadow: 0 0 0 1px rgba(255,255,255,.14), 0 0 26px rgba(10,132,255,.55);
+        animation: logoGlow 3.2s ease-in-out infinite;
+    }
+    @keyframes logoGlow { 0%,100% { box-shadow: 0 0 0 1px rgba(255,255,255,.14), 0 0 20px rgba(10,132,255,.45); } 50% { box-shadow: 0 0 0 1px rgba(255,255,255,.2), 0 0 34px rgba(100,210,255,.7); } }
+    .brand b { font-size: 15px; letter-spacing: -.01em; }
+
+    .steps { gap: 7px; margin-bottom: 28px; }
+    .step-dot { height: 5px; border-radius: 3px; background: rgba(255,255,255,.1); transition: background .35s ease, box-shadow .35s ease; }
+    .step-dot.active { background: linear-gradient(90deg, #0a84ff, #64d2ff); box-shadow: 0 0 14px rgba(10,132,255,.7); }
+    .step-dot.done { background: var(--ok); }
+
+    .step.show { animation: stepIn .38s cubic-bezier(.2,.8,.2,1); }
+    @keyframes stepIn { from { opacity: 0; transform: translateX(18px); } to { opacity: 1; transform: none; } }
+
+    .kicker { display: inline-block; padding: 4px 11px; border-radius: 999px; background: rgba(10,132,255,.14); border: 1px solid rgba(10,132,255,.4); letter-spacing: .09em; }
+    h1 { font-size: 27px; letter-spacing: -.03em; }
+    .sub { font-size: 13.5px; color: #b0b0b8; }
+
+    .btn {
+        height: 50px; padding: 0 18px; border-radius: 15px; font-size: 14.5px; font-weight: 700;
+        background: linear-gradient(180deg, #2f95ff, #0a84ff 55%, #0070e6);
+        box-shadow: inset 0 1px 0 rgba(255,255,255,.35), 0 12px 28px -12px rgba(10,132,255,.95);
+    }
+    .btn:hover:not(:disabled) { filter: brightness(1.1); }
+    .btn.ghost {
+        background: var(--glass); color: #cfcfd6; border: 1px solid var(--edge);
+        box-shadow: inset 0 1px 0 rgba(255,255,255,.1); height: 44px; font-size: 13.5px;
+    }
+    .btn.ghost:hover:not(:disabled) { background: var(--glass-strong); color: #fff; }
+
+    .opt {
+        border: 1px solid var(--edge); border-radius: 17px; padding: 16px 18px; background: var(--glass);
+        box-shadow: inset 0 1px 0 rgba(255,255,255,.08);
+    }
+    .opt:hover:not(:disabled) { border-color: rgba(100,210,255,.55); background: var(--glass-strong); transform: translateY(-2px); }
+    .opt.selected {
+        border-color: #0a84ff; background: linear-gradient(180deg, rgba(10,132,255,.22), rgba(10,132,255,.08));
+        box-shadow: inset 0 1px 0 rgba(255,255,255,.14), 0 0 0 3px rgba(10,132,255,.18), 0 14px 30px -16px rgba(10,132,255,.9);
+    }
+    .account, .path-box { border-radius: 15px; background: var(--glass); border: 1px solid var(--edge); }
+    .host-row { border-top-color: rgba(255,255,255,.08); }
+    .consent { padding: 10px 12px; border-radius: 13px; background: var(--glass); border: 1px solid rgba(255,255,255,.1); }
+    @media (max-width: 560px) { .card { padding: 26px 20px 22px; border-radius: 22px; } h1 { font-size: 22px; } }
 </style>
 </head>
 <body>
+<select id="langSelect" data-no-i18n></select>
 <div class="card">
     <div class="brand">
         <img class="mark-img" src="${brand.LOGO}" alt="Spidx Uploader" width="30" height="30">
@@ -376,17 +454,17 @@ const WIZARD_HTML = `<!DOCTYPE html>
     <div class="step" id="step1">
         <div class="kicker">Step 1 of 4</div>
         <h1>Sign in with Google</h1>
-        <p class="sub">This is the account your Free/Pro status is looked up for, and — if you pick Google Drive next — the Drive your uploads land in. Signing in sends your Google sign-in token to the Spidx license server so it can look up your plan; the Privacy Policy lists exactly what is sent where.</p>
+        <p class="sub">This is the account your Free/Pro status is looked up for, and - if you pick Google Drive next - the Drive your uploads land in. Signing in sends your Google sign-in token to the Spidx license server so it can look up your plan; the Privacy Policy lists exactly what is sent where.</p>
 
         <label class="consent" id="consentRow">
             <input type="checkbox" id="consentBox">
-            <span>I have read and agree to the <a href="https://spidxuploader.com/terms" target="_blank" rel="noopener noreferrer">Terms of Service</a>, the <a href="https://spidxuploader.com/eula" target="_blank" rel="noopener noreferrer">End User License Agreement</a> and the <a href="https://spidxuploader.com/privacy" target="_blank" rel="noopener noreferrer">Privacy Policy</a>.</span>
+            <span data-i18n-html='I have read and agree to the <a href="https://spidxuploader.com/terms" target="_blank" rel="noopener noreferrer">Terms of Service</a>, the <a href="https://spidxuploader.com/eula" target="_blank" rel="noopener noreferrer">End User License Agreement</a> and the <a href="https://spidxuploader.com/privacy" target="_blank" rel="noopener noreferrer">Privacy Policy</a>.'>I have read and agree to the <a href="https://spidxuploader.com/terms" target="_blank" rel="noopener noreferrer">Terms of Service</a>, the <a href="https://spidxuploader.com/eula" target="_blank" rel="noopener noreferrer">End User License Agreement</a> and the <a href="https://spidxuploader.com/privacy" target="_blank" rel="noopener noreferrer">Privacy Policy</a>.</span>
         </label>
 
         <div class="account" id="accountBox">
             <div class="avatar" id="accountInitial">?</div>
             <div class="who">
-                <b id="accountEmail">—</b>
+                <b id="accountEmail">-</b>
                 <span id="accountTier">checking tier...</span>
             </div>
         </div>
@@ -410,7 +488,7 @@ const WIZARD_HTML = `<!DOCTYPE html>
     <div class="step" id="step2">
         <div class="kicker">Step 2 of 4</div>
         <h1>Where should uploads go?</h1>
-        <p class="sub">Changeable any time later — tray menu or the Dashboard.</p>
+        <p class="sub">Changeable any time later - tray menu or the Dashboard.</p>
 
         <button class="opt" id="destWorkupload" data-dest="workupload">
             <span class="t">WorkUpload</span>
@@ -418,7 +496,7 @@ const WIZARD_HTML = `<!DOCTYPE html>
         </button>
         <button class="opt" id="destDrive" data-dest="drive">
             <span class="t">Google Drive<span class="tag" id="driveTag" style="display:none;">PRO</span></span>
-            <span class="d">Direct API upload to your own Drive — no browser, no Security Check, nothing that breaks when WorkUpload redesigns a page.</span>
+            <span class="d">Direct API upload to your own Drive - no browser, no Security Check, nothing that breaks when WorkUpload redesigns a page.</span>
         </button>
 
         <button class="link" id="haveCodeLink" style="display:none;">Have a license code? Enter it to unlock Google Drive</button>
@@ -431,7 +509,7 @@ const WIZARD_HTML = `<!DOCTYPE html>
     <div class="step" id="step3">
         <div class="kicker">Step 3 of 4</div>
         <h1>Connect your panels</h1>
-        <p class="sub">Both panels drop exports into one folder that the helper watches. This is that folder — the panels ask for it once.</p>
+        <p class="sub">Both panels drop exports into one folder that the helper watches. This is that folder - the panels ask for it once.</p>
 
         <div class="path-box">
             <code id="incomingPath">...</code>
@@ -469,7 +547,7 @@ const WIZARD_HTML = `<!DOCTYPE html>
         <div class="host-row">
             <div class="ico vegas">Vg</div>
             <div class="txt">
-                <b>VEGAS Pro <span style="color: var(--faint); font-weight: 500;">(optional, uploading from VEGAS needs a Pro plan)</span></b>
+                <b>VEGAS Pro <span style="color: var(--faint); font-weight: 500;">(optional)</span></b>
                 <span>Builds and installs a docked panel that saves the current frame as a PNG (View &gt; Extensions &gt; Spidx Uploader). VEGAS must be closed while it installs.</span>
                 <button class="mini" id="installVegasBtn">Install the VEGAS Pro plugin</button>
             </div>
@@ -488,6 +566,7 @@ const WIZARD_HTML = `<!DOCTYPE html>
     </div>
 </div>
 
+<script>/*__I18N__*/</script>
 <script>
 function $(id) { return document.getElementById(id); }
 
@@ -518,8 +597,8 @@ function renderAccount() {
     $("accountEmail").textContent = state.email;
     $("accountInitial").textContent = state.email.charAt(0);
     $("accountTier").textContent = state.tier
-        ? (state.tier === "free" ? "Free tier" : state.tier.toUpperCase() + " tier")
-        : "tier not checked yet";
+        ? (state.tier === "free" ? t("Free tier") : t("{tier} tier", { tier: state.tier.toUpperCase() }))
+        : t("tier not checked yet");
 
     var chip = $("tierChip");
     chip.className = "tier-chip show tier-" + (state.tier || "free");
@@ -542,13 +621,13 @@ function renderAccount() {
 function applyPproButtonState() {
     if (!state.pproPanelAvailable) {
         $("installPproBtn").disabled = true;
-        $("installPproBtn").textContent = "Premiere Pro panel folder not found (CEP-PPRO)";
+        $("installPproBtn").textContent = t("Premiere Pro panel folder not found (CEP-PPRO)");
     } else if (!state.pproAllowed) {
         $("installPproBtn").disabled = true;
-        $("installPproBtn").textContent = "Premiere Pro panel needs Pro or the Thumbnail Pack";
+        $("installPproBtn").textContent = t("Premiere Pro panel needs Pro or the Thumbnail Pack");
     } else {
         $("installPproBtn").disabled = false;
-        $("installPproBtn").textContent = "Install the Premiere Pro panel";
+        $("installPproBtn").textContent = t("Install the Premiere Pro panel");
     }
 }
 
@@ -560,17 +639,17 @@ async function loadState() {
         $("incomingPath").textContent = data.incomingPath || "";
         $("installAeBtn").disabled = !data.aePanelAvailable;
         if (!data.aePanelAvailable) {
-            $("installAeBtn").textContent = "AE panel folder not found (CEP-AE)";
+            $("installAeBtn").textContent = t("AE panel folder not found (CEP-AE)");
         }
         if (!data.psPanelAvailable) {
             $("installPsBtn").disabled = true;
-            $("installPsBtn").textContent = "Photoshop panel (.ccx) not found";
+            $("installPsBtn").textContent = t("Photoshop panel (.ccx) not found");
         } else if (!data.upiaAvailable) {
             $("installPsBtn").disabled = true;
-            $("installPsBtn").textContent = "Requires Creative Cloud desktop app";
+            $("installPsBtn").textContent = t("Requires Creative Cloud desktop app");
         } else {
             $("installPsBtn").disabled = false;
-            $("installPsBtn").textContent = "Install the Photoshop panel";
+            $("installPsBtn").textContent = t("Install the Photoshop panel");
         }
         applyPproButtonState();
         applyVegasButtonState();
@@ -597,7 +676,7 @@ $("consentBox").addEventListener("change", async function () {
         $("signinBtn").disabled = false;
     } catch (err) {
         box.checked = false;
-        setStatus("signinStatus", "Could not save your choice — try again.", "err");
+        setStatus("signinStatus", t("Could not save your choice - try again."), "err");
     }
     box.disabled = false;
 });
@@ -606,7 +685,7 @@ $("consentBox").addEventListener("change", async function () {
 $("signinBtn").addEventListener("click", async function () {
     var btn = $("signinBtn");
     btn.disabled = true;
-    setStatus("signinStatus", "Opening Google sign-in in a new tab — finish it there, then come back.");
+    setStatus("signinStatus", t("Opening Google sign-in in a new tab - finish it there, then come back."));
 
     try {
         var res = await fetch("/signin", { method: "POST" });
@@ -621,14 +700,14 @@ $("signinBtn").addEventListener("click", async function () {
             applyPproButtonState();
         applyVegasButtonState();
             setStatus("signinStatus", data.tierChecked
-                ? "Signed in."
-                : "Signed in — the tier check could not reach the server, so you start on Free.", "ok");
+                ? t("Signed in.")
+                : t("Signed in - the tier check could not reach the server, so you start on Free."), "ok");
         } else {
-            setStatus("signinStatus", data.message || "Sign-in failed.", "err");
+            setStatus("signinStatus", data.message ? t(data.message) : t("Sign-in failed."), "err");
             btn.disabled = false;
         }
     } catch (err) {
-        setStatus("signinStatus", "Could not reach the setup server.", "err");
+        setStatus("signinStatus", t("Could not reach the setup server."), "err");
         btn.disabled = false;
     }
 });
@@ -639,11 +718,11 @@ $("continue1Btn").addEventListener("click", function () { showStep(2); });
 $("wizLicenseBtn").addEventListener("click", async function () {
     var input = $("wizLicenseInput");
     var code = input.value.trim();
-    if (!code) { setStatus("wizLicenseStatus", "Enter a code first.", "err"); return; }
+    if (!code) { setStatus("wizLicenseStatus", t("Enter a code first."), "err"); return; }
 
     var btn = $("wizLicenseBtn");
     btn.disabled = true;
-    setStatus("wizLicenseStatus", "Activating...");
+    setStatus("wizLicenseStatus", t("Activating..."));
     try {
         var res = await fetch("/redeem-license", {
             method: "POST",
@@ -660,14 +739,21 @@ $("wizLicenseBtn").addEventListener("click", async function () {
             renderAccount();
             applyPproButtonState();
         applyVegasButtonState();
-            var label = data.tier.toUpperCase() + (data.trialDaysRemaining ? " (" + data.trialDaysRemaining + (data.trialDaysRemaining === 1 ? " day" : " days") + " left)" : " (lifetime)");
-            setStatus("wizLicenseStatus", "Activated - you now have " + label + (data.driveAllowed ? ". Google Drive is unlocked." : "."), "ok");
+            var tierName = data.tier.toUpperCase();
+            var label = data.trialDaysRemaining
+                ? (data.trialDaysRemaining === 1
+                    ? t("{tier} ({n} day left)", { tier: tierName, n: data.trialDaysRemaining })
+                    : t("{tier} ({n} days left)", { tier: tierName, n: data.trialDaysRemaining }))
+                : t("{tier} (lifetime)", { tier: tierName });
+            setStatus("wizLicenseStatus", data.driveAllowed
+                ? t("Activated - you now have {label}. Google Drive is unlocked.", { label: label })
+                : t("Activated - you now have {label}.", { label: label }), "ok");
             setStatus("signinStatus", "");
         } else {
-            setStatus("wizLicenseStatus", data.message || "Could not activate this code.", "err");
+            setStatus("wizLicenseStatus", data.message ? t(data.message) : t("Could not activate this code."), "err");
         }
     } catch (err) {
-        setStatus("wizLicenseStatus", "Could not reach the setup server.", "err");
+        setStatus("wizLicenseStatus", t("Could not reach the setup server."), "err");
     }
     btn.disabled = false;
 });
@@ -680,7 +766,7 @@ $("haveCodeLink").addEventListener("click", function () {
 });
 
 $("switchAccountBtn").addEventListener("click", async function () {
-    setStatus("signinStatus", "Clearing the saved login...");
+    setStatus("signinStatus", t("Clearing the saved login..."));
     try {
         await fetch("/signin-reset", { method: "POST" });
     } catch (err) {}
@@ -694,7 +780,7 @@ $("switchAccountBtn").addEventListener("click", async function () {
     $("signinBtn").disabled = !$("consentBox").checked;
     $("continue1Btn").style.display = "none";
     $("switchAccountBtn").style.display = "none";
-    setStatus("signinStatus", "Saved login cleared — sign in with the account you want.");
+    setStatus("signinStatus", t("Saved login cleared - sign in with the account you want."));
 });
 
 /* ---------------- step 2 ---------------- */
@@ -707,7 +793,7 @@ for (var i = 0; i < options.length; i++) {
         selectedDest = this.dataset.dest;
         $("destContinueBtn").disabled = false;
         setStatus("destStatus", selectedDest === "drive"
-            ? "Files land in a \\"Spidx Uploads\\" folder on your Drive, set to anyone-with-the-link."
+            ? t("Files land in a \\"Spidx Uploads\\" folder on your Drive, set to anyone-with-the-link.")
             : "");
     });
 }
@@ -728,8 +814,8 @@ $("destContinueBtn").addEventListener("click", async function () {
 /* ---------------- step 3 ---------------- */
 $("copyPathBtn").addEventListener("click", function () {
     navigator.clipboard.writeText(state.incomingPath || "").then(function () {
-        $("copyPathBtn").textContent = "Copied";
-        setTimeout(function () { $("copyPathBtn").textContent = "Copy"; }, 1600);
+        $("copyPathBtn").textContent = t("Copied");
+        setTimeout(function () { $("copyPathBtn").textContent = t("Copy"); }, 1600);
     });
 });
 
@@ -740,18 +826,18 @@ $("openPathBtn").addEventListener("click", async function () {
 $("installAeBtn").addEventListener("click", async function () {
     var btn = $("installAeBtn");
     btn.disabled = true;
-    setStatus("hostsStatus", "Starting the After Effects panel installer — follow the window it opens.");
+    setStatus("hostsStatus", t("Starting the After Effects panel installer - follow the window it opens."));
     try {
         var res = await fetch("/install-ae-panel", { method: "POST" });
         var data = await res.json();
         if (!data.ok) {
-            setStatus("hostsStatus", data.message || "Could not start the installer.", "err");
+            setStatus("hostsStatus", data.message ? t(data.message) : t("Could not start the installer."), "err");
             btn.disabled = false;
         } else {
-            btn.textContent = "Installer opened";
+            btn.textContent = t("Installer opened");
         }
     } catch (err) {
-        setStatus("hostsStatus", "Could not start the installer.", "err");
+        setStatus("hostsStatus", t("Could not start the installer."), "err");
         btn.disabled = false;
     }
 });
@@ -759,28 +845,28 @@ $("installAeBtn").addEventListener("click", async function () {
 function applyVegasButtonState() {
     if (!state.vegasPanelAvailable) {
         $("installVegasBtn").disabled = true;
-        $("installVegasBtn").textContent = "VEGAS plugin folder not found (VEGAS-Plugin)";
+        $("installVegasBtn").textContent = t("VEGAS plugin folder not found (VEGAS-Plugin)");
     } else {
         $("installVegasBtn").disabled = false;
-        $("installVegasBtn").textContent = "Install the VEGAS Pro plugin";
+        $("installVegasBtn").textContent = t("Install the VEGAS Pro plugin");
     }
 }
 
 $("installVegasBtn").addEventListener("click", async function () {
     var btn = $("installVegasBtn");
     btn.disabled = true;
-    setStatus("hostsStatus", "Starting the VEGAS Pro plugin installer — follow the window it opens.");
+    setStatus("hostsStatus", t("Starting the VEGAS Pro plugin installer - follow the window it opens."));
     try {
         var res = await fetch("/install-vegas-panel", { method: "POST" });
         var data = await res.json();
         if (!data.ok) {
-            setStatus("hostsStatus", data.message || "Could not start the installer.", "err");
+            setStatus("hostsStatus", data.message ? t(data.message) : t("Could not start the installer."), "err");
             btn.disabled = false;
         } else {
-            btn.textContent = "Installer opened";
+            btn.textContent = t("Installer opened");
         }
     } catch (err) {
-        setStatus("hostsStatus", "Could not start the installer.", "err");
+        setStatus("hostsStatus", t("Could not start the installer."), "err");
         btn.disabled = false;
     }
 });
@@ -788,18 +874,18 @@ $("installVegasBtn").addEventListener("click", async function () {
 $("installPproBtn").addEventListener("click", async function () {
     var btn = $("installPproBtn");
     btn.disabled = true;
-    setStatus("hostsStatus", "Starting the Premiere Pro panel installer — follow the window it opens.");
+    setStatus("hostsStatus", t("Starting the Premiere Pro panel installer - follow the window it opens."));
     try {
         var res = await fetch("/install-ppro-panel", { method: "POST" });
         var data = await res.json();
         if (!data.ok) {
-            setStatus("hostsStatus", data.message || "Could not start the installer.", "err");
+            setStatus("hostsStatus", data.message ? t(data.message) : t("Could not start the installer."), "err");
             btn.disabled = false;
         } else {
-            btn.textContent = "Installer opened";
+            btn.textContent = t("Installer opened");
         }
     } catch (err) {
-        setStatus("hostsStatus", "Could not start the installer.", "err");
+        setStatus("hostsStatus", t("Could not start the installer."), "err");
         btn.disabled = false;
     }
 });
@@ -807,19 +893,19 @@ $("installPproBtn").addEventListener("click", async function () {
 $("installPsBtn").addEventListener("click", async function () {
     var btn = $("installPsBtn");
     btn.disabled = true;
-    setStatus("hostsStatus", "Opening the Photoshop panel installer...");
+    setStatus("hostsStatus", t("Opening the Photoshop panel installer..."));
     try {
         var res = await fetch("/install-ps-panel", { method: "POST" });
         var data = await res.json();
         if (!data.ok) {
-            setStatus("hostsStatus", data.message || "Could not install the Photoshop panel.", "err");
+            setStatus("hostsStatus", data.message ? t(data.message) : t("Could not install the Photoshop panel."), "err");
             btn.disabled = false;
         } else {
-            btn.textContent = "Installer opened";
-            setStatus("hostsStatus", "Allow the administrator prompt and follow the console window; when it finishes, restart Photoshop to see the panel.", "ok");
+            btn.textContent = t("Installer opened");
+            setStatus("hostsStatus", t("Allow the administrator prompt and follow the console window; when it finishes, restart Photoshop to see the panel."), "ok");
         }
     } catch (err) {
-        setStatus("hostsStatus", "Could not install the Photoshop panel.", "err");
+        setStatus("hostsStatus", t("Could not install the Photoshop panel."), "err");
         btn.disabled = false;
     }
 });
@@ -830,13 +916,36 @@ $("hostsContinueBtn").addEventListener("click", function () { showStep(4); });
 $("finishBtn").addEventListener("click", async function () {
     var btn = $("finishBtn");
     btn.disabled = true;
-    btn.textContent = "Starting Spidx Uploader...";
+    btn.textContent = t("Starting Spidx Uploader...");
     try { await fetch("/finish", { method: "POST" }); } catch (err) {}
     document.querySelector(".card").innerHTML =
         '<div class="center"><div class="check">&#x1F680;</div>'
-        + '<h1>You can close this tab</h1>'
-        + '<p class="sub">Spidx Uploader is starting up — look for its icon near the clock.</p></div>';
+        + '<h1>' + t("You can close this tab") + '</h1>'
+        + '<p class="sub">' + t("Spidx Uploader is starting up - look for its icon near the clock.") + '</p></div>';
 });
+
+/* ---------------- language picker ---------------- */
+(function () {
+    var sel = $("langSelect");
+    sel.setAttribute("aria-label", t("Language"));
+    var auto = document.createElement("option");
+    auto.value = "auto";
+    auto.textContent = t("Automatic (system language)");
+    sel.appendChild(auto);
+    for (var k = 0; k < I18N_LANGS.length; k++) {
+        var o = document.createElement("option");
+        o.value = I18N_LANGS[k].code;
+        o.textContent = I18N_LANGS[k].name;
+        sel.appendChild(o);
+    }
+    sel.value = I18N_PREF;
+    sel.addEventListener("change", async function () {
+        try {
+            await fetch("/set-language", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ language: sel.value }) });
+        } catch (err) {}
+        location.reload();
+    });
+})();
 
 loadState();
 showStep(1);
@@ -846,7 +955,7 @@ showStep(1);
 `;
 
 // Runs the wizard and resolves once the user clicks "Finish". Resolves
-// (doesn't reject) even on internal errors — a broken wizard should never
+// (doesn't reject) even on internal errors - a broken wizard should never
 // permanently block the helper from starting.
 function runSetupWizard(log = console.log) {
     return new Promise(resolve => {
@@ -866,7 +975,7 @@ function runSetupWizard(log = console.log) {
 
             if (url.pathname === "/" && req.method === "GET") {
                 res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
-                res.end(WIZARD_HTML);
+                res.end(WIZARD_HTML.replace("/*__I18N__*/", () => i18n.clientScript()));
                 return;
             }
 
@@ -911,7 +1020,7 @@ function runSetupWizard(log = console.log) {
                 // Signing in sends data to the licence server - not without consent.
                 if (!legal.hasValidConsent()) {
                     res.writeHead(200, { "Content-Type": "application/json" });
-                    res.end(JSON.stringify({ ok: false, message: "Please accept the Terms of Service and the Privacy Policy first." }));
+                    res.end(JSON.stringify({ ok: false, message: i18n.t("Please accept the Terms of Service and the Privacy Policy first.") }));
                     return;
                 }
                 (async () => {
@@ -973,7 +1082,7 @@ function runSetupWizard(log = console.log) {
                     };
                     try {
                         if (!signedInEmail && !readKnownAccount().email) {
-                            reply({ ok: false, message: "Sign in with Google first." });
+                            reply({ ok: false, message: i18n.t("Sign in with Google first.") });
                             return;
                         }
                         const parsed = JSON.parse(body || "{}");
@@ -1043,11 +1152,11 @@ function runSetupWizard(log = console.log) {
 
             if (url.pathname === "/install-ae-panel" && req.method === "POST") {
                 try {
-                    if (!fs.existsSync(AE_INSTALLER)) throw new Error("CEP-AE\\Install AE Panel.bat was not found next to the App folder.");
+                    if (!fs.existsSync(AE_INSTALLER)) throw new Error(i18n.t("CEP-AE\\Install AE Panel.bat was not found next to the App folder."));
                     log(`Setup wizard: launching After Effects panel installer at "${AE_INSTALLER}".`);
                     spawnBatFile(AE_INSTALLER, log, (ok, message) => {
                         res.writeHead(200, { "Content-Type": "application/json" });
-                        res.end(JSON.stringify(ok ? { ok: true } : { ok: false, message: "Windows refused to start it: " + message }));
+                        res.end(JSON.stringify(ok ? { ok: true } : { ok: false, message: i18n.t("Windows refused to start it: {error}", { error: message }) }));
                     });
                 } catch (err) {
                     res.writeHead(200, { "Content-Type": "application/json" });
@@ -1058,13 +1167,11 @@ function runSetupWizard(log = console.log) {
 
             if (url.pathname === "/install-ppro-panel" && req.method === "POST") {
                 try {
-                    const known = readKnownAccount();
-                    if (!pproAllowed(known.tier, known.roles)) throw new Error("The Premiere Pro panel needs a Pro license or the Spidx Thumbnail Pack.");
-                    if (!fs.existsSync(PPRO_INSTALLER)) throw new Error("CEP-PPRO\\Install PPRO Panel.bat was not found next to the App folder.");
+                    if (!fs.existsSync(PPRO_INSTALLER)) throw new Error(i18n.t("CEP-PPRO\\Install PPRO Panel.bat was not found next to the App folder."));
                     log(`Setup wizard: launching Premiere Pro panel installer at "${PPRO_INSTALLER}".`);
                     spawnBatFile(PPRO_INSTALLER, log, (ok, message) => {
                         res.writeHead(200, { "Content-Type": "application/json" });
-                        res.end(JSON.stringify(ok ? { ok: true } : { ok: false, message: "Windows refused to start it: " + message }));
+                        res.end(JSON.stringify(ok ? { ok: true } : { ok: false, message: i18n.t("Windows refused to start it: {error}", { error: message }) }));
                     });
                 } catch (err) {
                     res.writeHead(200, { "Content-Type": "application/json" });
@@ -1075,11 +1182,11 @@ function runSetupWizard(log = console.log) {
 
             if (url.pathname === "/install-vegas-panel" && req.method === "POST") {
                 try {
-                    if (!fs.existsSync(VEGAS_INSTALLER)) throw new Error("VEGAS-Plugin\\Install VEGAS Plugin.bat was not found next to the App folder.");
+                    if (!fs.existsSync(VEGAS_INSTALLER)) throw new Error(i18n.t("VEGAS-Plugin\\Install VEGAS Plugin.bat was not found next to the App folder."));
                     log(`Setup wizard: launching VEGAS Pro plugin installer at "${VEGAS_INSTALLER}".`);
                     spawnBatFile(VEGAS_INSTALLER, log, (ok, message) => {
                         res.writeHead(200, { "Content-Type": "application/json" });
-                        res.end(JSON.stringify(ok ? { ok: true } : { ok: false, message: "Windows refused to start it: " + message }));
+                        res.end(JSON.stringify(ok ? { ok: true } : { ok: false, message: i18n.t("Windows refused to start it: {error}", { error: message }) }));
                     });
                 } catch (err) {
                     res.writeHead(200, { "Content-Type": "application/json" });
@@ -1090,12 +1197,12 @@ function runSetupWizard(log = console.log) {
 
             if (url.pathname === "/install-ps-panel" && req.method === "POST") {
                 try {
-                    if (!fs.existsSync(PS_INSTALLER_BAT) || !fs.existsSync(PS_INSTALLER_CCX)) throw new Error("The Photoshop panel files (UXP folder) were not found next to the App folder.");
-                    if (!upia.getUpiaPath()) throw new Error("Creative Cloud desktop app was not found — it's what installs Photoshop plugins. Install it, then try again.");
+                    if (!fs.existsSync(PS_INSTALLER_BAT) || !fs.existsSync(PS_INSTALLER_CCX)) throw new Error(i18n.t("The Photoshop panel files (UXP folder) were not found next to the App folder."));
+                    if (!upia.getUpiaPath()) throw new Error(i18n.t("Creative Cloud desktop app was not found - it's what installs Photoshop plugins. Install it, then try again."));
                     log(`Setup wizard: launching Photoshop panel installer at "${PS_INSTALLER_BAT}".`);
                     spawnBatFile(PS_INSTALLER_BAT, log, (ok, message) => {
                         res.writeHead(200, { "Content-Type": "application/json" });
-                        res.end(JSON.stringify(ok ? { ok: true } : { ok: false, message: "Windows refused to start it: " + message }));
+                        res.end(JSON.stringify(ok ? { ok: true } : { ok: false, message: i18n.t("Windows refused to start it: {error}", { error: message }) }));
                     });
                 } catch (err) {
                     res.writeHead(200, { "Content-Type": "application/json" });
@@ -1115,6 +1222,31 @@ function runSetupWizard(log = console.log) {
                         cfg.destination = destination;
                         writeHelperConfig(cfg);
                         log(`Setup wizard: destination set to "${destination}".`);
+                        res.writeHead(200, { "Content-Type": "application/json" });
+                        res.end(JSON.stringify({ ok: true }));
+                    } catch (err) {
+                        res.writeHead(400, { "Content-Type": "application/json" });
+                        res.end(JSON.stringify({ ok: false, message: err.message }));
+                    }
+                });
+                return;
+            }
+
+            if (url.pathname === "/set-language" && req.method === "POST") {
+                let body = "";
+                req.on("data", chunk => { body += chunk; });
+                req.on("end", () => {
+                    try {
+                        const parsed = JSON.parse(body || "{}");
+                        if (!i18n.isValidPreference(parsed.language)) {
+                            res.writeHead(400, { "Content-Type": "application/json" });
+                            res.end(JSON.stringify({ ok: false, message: "Unknown language." }));
+                            return;
+                        }
+                        const cfg = readHelperConfig();
+                        cfg.language = parsed.language;
+                        writeHelperConfig(cfg);
+                        log(`Setup wizard: language set to "${parsed.language}".`);
                         res.writeHead(200, { "Content-Type": "application/json" });
                         res.end(JSON.stringify({ ok: true }));
                     } catch (err) {
@@ -1148,9 +1280,9 @@ function runSetupWizard(log = console.log) {
         server.listen(0, "127.0.0.1", () => {
             const port = server.address().port;
             const url = `http://127.0.0.1:${port}/`;
-            log("First run detected — opening the setup wizard in your browser...");
+            log("First run detected - opening the setup wizard...");
             log(`If it doesn't open automatically, visit: ${url}`);
-            openInBrowser(url, log);
+            require("./app-window.js").openAppWindow(url, 760, 820, log, u => openInBrowser(u, log));
         });
     });
 }

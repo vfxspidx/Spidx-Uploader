@@ -32,7 +32,7 @@
     .panel { padding: 12px 13px 16px; }
 
     /* CEP's panel is plain Chromium, so a custom (thin, dark) scrollbar
-       is just normal -webkit-scrollbar CSS — applies to the whole panel
+       is just normal -webkit-scrollbar CSS - applies to the whole panel
        and to any inner scrolling area (e.g. the Leaderboard rows) alike,
        instead of the stock light OS scrollbar clashing with this theme. */
     ::-webkit-scrollbar { width: 9px; height: 9px; }
@@ -177,6 +177,7 @@
         font-weight: 600; cursor: pointer; transition: background .15s ease, color .15s ease;
     }
     .tab-btn:hover:not(.active) { background: var(--surface-2); color: var(--text); }
+    .tab-btn.locked { opacity: .5; }
     .tab-btn.active { background: var(--accent); color: #fff; border-color: transparent; }
     .tab-page { display: none; }
     .tab-page.active { display: block; animation: spidx-fade-in .18s ease; }
@@ -184,6 +185,10 @@
         from { opacity: 0; transform: translateY(3px); }
         to   { opacity: 1; transform: translateY(0); }
     }
+
+    .spt-nick-row { display: flex; gap: 6px; align-items: stretch; margin-bottom: 0; }
+    .spt-nick-row input { flex: 1; min-width: 0; }
+    .spt-nick-row .lb-refresh { white-space: nowrap; }
 
     /* ---- leaderboard tab ---- */
     .lb-row { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
@@ -227,6 +232,36 @@
     .lb-item .pts { text-align: right; font-variant-numeric: tabular-nums; }
     .lb-head span:last-child { text-align: right; }
     .lb-empty { padding: 16px 10px; text-align: center; color: var(--dim); font-size: 11.5px; }
+
+    /* ===== glass look - same visual language as the Dashboard =====
+       Translucent surfaces over a soft colour backdrop. Chromium builds inside CEP that know
+       backdrop-filter get the blur too; older ones just see the translucent surfaces. */
+    :root {
+        --surface: rgba(255,255,255,.075);
+        --surface-2: rgba(255,255,255,.13);
+        --line: rgba(255,255,255,.14);
+        --glass-hi: inset 0 1px 0 rgba(255,255,255,.16);
+    }
+    html, body { background: transparent; }
+    html { background: #05060a; }
+    body::before {
+        content: ""; position: fixed; left: 0; top: 0; right: 0; bottom: 0; z-index: -1; pointer-events: none;
+        background:
+            radial-gradient(280px 220px at 8% 0%,   rgba(10,132,255,.40), transparent 70%),
+            radial-gradient(260px 220px at 100% 14%, rgba(100,210,255,.20), transparent 70%),
+            radial-gradient(320px 280px at 82% 100%, rgba(138,92,255,.28), transparent 70%),
+            #05060a;
+    }
+    .card, .file-row, .lb-table, .mg-tile, .seg button, .tab-btn, .lb-refresh, .lb-search, select, input[type="text"] { box-shadow: var(--glass-hi); }
+    .btn { background: linear-gradient(180deg, #2f95ff, #0a84ff 55%, #0070e6); box-shadow: inset 0 1px 0 rgba(255,255,255,.35), 0 4px 12px -6px rgba(10,132,255,.9); }
+    .btn.secondary { background: rgba(255,255,255,.12); box-shadow: var(--glass-hi); }
+    .btn.success { background: linear-gradient(180deg, #3adf6c, #30d158); }
+    .btn.error { background: linear-gradient(180deg, #ff6b62, #ff453a); }
+    .tab-btn.active { background: linear-gradient(180deg, #2f95ff, #0a84ff); }
+    select option { background: #1c1c1e; color: #f5f5f7; }
+    @supports ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+        .card, .file-row, .lb-table, .seg button, .tab-btn, .batch-progress { -webkit-backdrop-filter: blur(14px) saturate(1.5); backdrop-filter: blur(14px) saturate(1.5); }
+    }
 </style>
 </head>
 <body>
@@ -240,11 +275,12 @@
     <div class="tabs" id="tabs">
         <button class="tab-btn active" id="tabBtnUploader" data-tab="tabUploader">Uploader</button>
         <button class="tab-btn" id="tabBtnLeaderboard" data-tab="tabLeaderboard">Leaderboard</button>
+        <button class="tab-btn" id="tabBtnSpt" data-tab="tabSpt">SPT</button>
     </div>
 
     <div class="tab-page active" id="tabUploader">
     <div class="warn-box" id="deviceLimitWarning">
-        Device limit reached — this computer counts as a 3rd device on a paid tier, so it runs as Free here.
+        Device limit reached - this computer counts as a 3rd device on a paid tier, so it runs as Free here.
     </div>
 
     <div class="card" id="card">
@@ -277,11 +313,31 @@
     </div>
     <div class="card-sub" id="routeLine" style="margin-top:6px;"></div>
 
+    <div class="label" style="margin-top: 16px;">Render video</div>
+    <div class="lb-row">
+        <span class="lb-label">Template</span>
+        <select id="aeRenderTemplate"></select>
+    </div>
+    <div class="lb-row">
+        <span class="lb-label">Range</span>
+        <select id="aeRenderRange">
+            <option value="entire">Entire composition</option>
+            <option value="workarea">Work area</option>
+        </select>
+    </div>
+    <div class="btn-row">
+        <button class="btn" id="aeRenderUpload">Render &amp; upload</button>
+    </div>
+    <div class="card-sub" id="aeRenderLine" style="margin-top:6px;"></div>
+    <div class="foot">
+        <span class="link" id="aeRenderReload">Refresh list</span>
+    </div>
+
     <div class="file-row" id="fileRow">
         <div class="file-thumb" id="fileThumb">PNG</div>
         <div class="file-meta">
-            <div class="file-name" id="fileName">—</div>
-            <div class="file-size" id="fileSize">—</div>
+            <div class="file-name" id="fileName">-</div>
+            <div class="file-size" id="fileSize">-</div>
         </div>
     </div>
 
@@ -298,6 +354,40 @@
         <span class="link" id="changeFolder">Change incoming folder</span>
         <span class="path" id="folderPath"></span>
     </div>
+    </div>
+
+    <div class="tab-page" id="tabSpt">
+        <div class="card" id="sptLocked" style="display:none;">
+            <div class="card-title">SPT only</div>
+            <div class="card-sub" id="sptLockedText">These presets need the SPT role.</div>
+        </div>
+        <div id="sptBody">
+            <div class="lb-row">
+                <span class="lb-label">Preset</span>
+                <select id="sptPresetSelect"></select>
+            </div>
+            <div class="btn-row">
+                <button class="btn" id="sptApply">Apply to selected layers</button>
+            </div>
+            <div class="btn-row" style="margin-top:8px;">
+                <button class="btn secondary" id="sptApplyAdj">Apply as adjustment layer</button>
+            </div>
+            <div class="card-sub" id="sptLine" style="margin-top:8px;"></div>
+
+            <div class="label" style="margin-top: 18px;">Text templates</div>
+            <div class="lb-row">
+                <span class="lb-label">Template</span>
+                <select id="sptTemplateSelect"></select>
+            </div>
+            <div class="spt-nick-row">
+                <input type="text" id="sptNickInput" placeholder="Text / nick">
+                <button class="lb-refresh" id="sptUseLbNick" title="Fill in the player selected in the Leaderboard tab">From Leaderboard</button>
+            </div>
+            <div class="btn-row">
+                <button class="btn" id="sptInsertTemplate">Insert into comp</button>
+            </div>
+            <div class="card-sub" id="sptTemplateLine" style="margin-top:8px;"></div>
+        </div>
     </div>
 
     <div class="tab-page" id="tabLeaderboard">
@@ -328,6 +418,7 @@
     </div>
 </div>
 
+<script src="panel-i18n.js"></script>
 <script src="./index.js"></script>
 </body>
 </html>

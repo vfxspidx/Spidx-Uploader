@@ -1,17 +1,17 @@
 "use strict";
 
 /* ========================================================================
- *  Spidx Uploader — Premiere Pro panel (CEP)
+ *  Spidx Uploader - Premiere Pro panel (CEP)
  *
  *  Port of the After Effects panel (CEP-AE/client/index.js). It speaks
- *  the exact same protocol as the AE and Photoshop panels — small files
+ *  the exact same protocol as the AE and Photoshop panels - small files
  *  inside App\incoming:
  *
- *    .batch-config.json   written here  — how many files the engine waits for
- *    .batch-status.json   read here     — live collection/upload progress
- *    .engine-status.json  read here     — tier, destination, device limit
- *    .batch-force-send    written here  — "Send now"
- *    .batch-cancel        written here  — "Cancel"
+ *    .batch-config.json   written here  - how many files the engine waits for
+ *    .batch-status.json   read here     - live collection/upload progress
+ *    .engine-status.json  read here     - tier, destination, device limit
+ *    .batch-force-send    written here  - "Send now"
+ *    .batch-cancel        written here  - "Cancel"
  *
  *  so one running Spider Engine serves Photoshop, After Effects and
  *  Premiere Pro at the same time with no changes on its side.
@@ -19,7 +19,7 @@
  *  The panel does one thing on purpose: export the active sequence's
  *  current frame, always as PNG. See host/spidx.jsx for how that export
  *  actually happens (it's the one part of this port that couldn't stay
- *  a straight copy — Premiere has no AE-style saveFrameToPng()).
+ *  a straight copy - Premiere has no AE-style saveFrameToPng()).
  *
  *  No Node.js is required: everything goes through CEP's own cep.fs API,
  *  which is always present, instead of --enable-nodejs.
@@ -28,7 +28,7 @@
 var FOLDER_KEY = "spidx_ppro_incoming_path";
 var BATCH_COUNT_KEY = "spidx_ppro_batch_count";
 var FOLDER_NAME_KEY = "spidx_ppro_folder_name";
-// Manual override for pngframe.epr — spidxPresetPath() in spidx.jsx
+// Manual override for pngframe.epr - spidxPresetPath() in spidx.jsx
 // already auto-finds it (Media Encoder's Presets folder, or the
 // extension's own presets/ folder), so this is empty by default and
 // only needs setting if auto-detection genuinely can't find it on a
@@ -39,7 +39,7 @@ var BATCH_CONFIG_NAME = ".batch-config.json";
 var BATCH_STATUS_NAME = ".batch-status.json";
 var ENGINE_STATUS_NAME = ".engine-status.json";
 // Mirrored by server.js's syncDefaultCameraRawPreset() whenever the
-// Dashboard's preset fields change — reading it here (instead of
+// Dashboard's preset fields change - reading it here (instead of
 // re-deriving anything) means this indicator can never drift from
 // what actually happens to the file after Upload is clicked.
 var CAMERA_RAW_PRESET_NAME = ".default-camera-raw-preset.json";
@@ -53,7 +53,7 @@ var ENGINE_STALE_MS = 2 * 60 * 1000;
 
 var MULTI_BATCH_TIERS = ["pro", "dev", "tester"];
 // Same tier set gates every Pro+ feature (batch 2/3, Photoshop + Upload,
-// the Properties tab) — one name, used everywhere below.
+// the Properties tab) - one name, used everywhere below.
 var PRO_FEATURE_TIERS = MULTI_BATCH_TIERS;
 
 /* ---------------------------------------------------------------------- */
@@ -81,7 +81,18 @@ function userDataDir() {
     }
 }
 
-// This panel's own folder on disk (where host/, client/ and mogrts/ live).
+// The Thumbnail Pack content (MOGRT templates and their previews) is NOT inside the panel: the helper downloads it for
+// accounts that have the Pack into %APPDATA%\Spidx Uploader\pack\ppro (a "mogrts" folder lives in there).
+function packRootPPRO() {
+    try {
+        var raw = decodeURI(window.__adobe_cep__.getSystemPath("userData")).replace(/^file:\/\/\//i, "").replace(/^\/(?=[A-Za-z]:)/, "");
+        return raw ? raw.replace(/[\\\/]+$/, "") + "/Spidx Uploader/pack/ppro" : "";
+    } catch (err) {
+        return "";
+    }
+}
+
+// This panel's own folder on disk (where host/ and client/ live).
 function extensionPath() {
     try {
         var raw = decodeURI(window.__adobe_cep__.getSystemPath("extension"));
@@ -189,7 +200,7 @@ var presetPathLabel = $("presetPathLabel");
 var batchButtons = Array.prototype.slice.call(document.querySelectorAll(".batch-opt"));
 
 /* ---------------------------------------------------------------------- */
-/*  CEP plumbing — ExtendScript calls + file system                       */
+/*  CEP plumbing - ExtendScript calls + file system                       */
 /* ---------------------------------------------------------------------- */
 
 function evalScript(script) {
@@ -320,7 +331,7 @@ function updateFolderLabel() {
 }
 
 /* ---------------------------------------------------------------------- */
-/*  Batch selector — identical semantics to the Photoshop panel           */
+/*  Batch selector - identical semantics to the Photoshop panel           */
 /* ---------------------------------------------------------------------- */
 
 function tierAllowsMultiBatch() {
@@ -416,7 +427,21 @@ function setSelectedBatchCount(count, persist) {
         btn.classList.toggle("active", Number(btn.dataset.count) === count);
     });
     updateFolderNameVisibility();
+    updateRenderBatchLock();
 }
+// Batches ("Files per upload" 2 or 3) are for thumbnails only. While one is selected or being collected, rendering a
+// video is blocked - a render is a single upload of its own and must not get mixed up with a batch of stills.
+var BATCH_RENDER_NOTE = "Batches are for thumbnails. Set Files per upload to 1 to render a video.";
+function renderBlockedByBatch() { return selectedBatchCount > 1 || lastBatchState === "collecting"; }
+function updateRenderBatchLock() {
+    if (typeof renderUploadButton === "undefined" || !renderUploadButton || typeof renderLine === "undefined" || !renderLine) return;
+    var blocked = renderBlockedByBatch();
+    if (!busy) renderUploadButton.disabled = blocked;
+    renderUploadButton.title = blocked ? BATCH_RENDER_NOTE : "";
+    if (blocked) renderLine.textContent = BATCH_RENDER_NOTE;
+    else if (renderLine.textContent === BATCH_RENDER_NOTE || renderLine.textContent === "") renderLine.textContent = "";
+}
+
 
 batchButtons.forEach(function (btn) {
     btn.addEventListener("click", function () {
@@ -469,7 +494,7 @@ $("changeFolder").addEventListener("click", function () {
 /*  Preset (.epr) override                                                */
 /*                                                                         */
 /*  spidxPresetPath() in spidx.jsx already auto-finds pngframe.epr, so    */
-/*  this only matters when auto-detection genuinely can't — an unusual    */
+/*  this only matters when auto-detection genuinely can't - an unusual    */
 /*  Media Encoder install location, a renamed preset, etc. Empty means    */
 /*  "let the host script keep auto-detecting", same as before this        */
 /*  existed.                                                              */
@@ -495,7 +520,54 @@ $("changePreset").addEventListener("click", function () {
 /*  Status polling (engine + batch)                                       */
 /* ---------------------------------------------------------------------- */
 
+
+// Free plan: a monthly allowance of "Render & upload" videos. The helper counts them and publishes the
+// numbers in .engine-status.json ("renders": { used, limit - null = unlimited, remaining }); the panel
+// only reads them, so it can warn BEFORE a render that the helper would have to refuse.
+var currentRenders = null;
+var currentPack = null;
+// Translations: the helper writes the dictionary of the chosen language next to the incoming folder.
+var panelI18nLoaded = "";
+function panelI18nSync(status) {
+    var lang = (status && status.language) || "en";
+    if (lang === panelI18nLoaded || !window.PanelI18n) return;
+    if (lang === "en") { panelI18nLoaded = lang; if (window.PanelI18n.language() !== "en") window.PanelI18n.set("en", null); return; }
+    if (typeof incomingPath === "undefined" || !incomingPath) return;
+    var data = readJsonFile(joinPath(incomingPath, ".panel-i18n.json"));
+    if (data && data.language === lang && data.strings) {
+        panelI18nLoaded = lang;
+        window.PanelI18n.set(lang, data.strings);
+    }
+}
+
+
+// What to tell the user when the template list is empty: the Pack is downloaded by the helper, not shipped with the panel.
+function packEmptyMessage(what) {
+    var p = currentPack;
+    if (p && p.state === "syncing") return "The Thumbnail Pack is downloading... try again in a moment.";
+    if (p && p.state === "error") return "The Thumbnail Pack could not be downloaded: " + (p.message || "no answer from the server") + ".";
+    if (p && p.state === "none") return "No " + what + " yet - they download automatically for accounts that have the Thumbnail Pack.";
+    return "No " + what + " yet. They download automatically for accounts with the Thumbnail Pack - check the Dashboard > Templates.";
+}
+
+function rendersLimitReached() {
+    return !!(currentRenders && currentRenders.limit != null && currentRenders.used >= currentRenders.limit);
+}
+
+function rendersNote() {
+    if (!currentRenders || currentRenders.limit == null) return "";
+    return "Renders this month: " + currentRenders.used + " of " + currentRenders.limit + (currentRenders.remaining === 0 ? " - Pro has unlimited renders." : "");
+}
+
+function rendersLimitCard() {
+    setCard("Render limit reached", "The free plan includes " + currentRenders.limit + " video renders per month. Pro has unlimited renders.", "error");
+}
+
 function applyEngineStatus(status) {
+    currentRenders = (status && status.renders) || null;
+    currentPack = (status && status.pack) || null;
+    panelI18nSync(status);
+    if (typeof renderLine !== "undefined" && renderLine && (!renderLine.textContent || /^Renders this month/.test(renderLine.textContent))) renderLine.textContent = rendersNote();
     renderPresetSelect(status && status.presets, status && status.activePreset, status && status.activePresetModified);
     var stamp = status && Number(status.updatedAt);
     var online = !!(stamp && (Date.now() - stamp) < ENGINE_STALE_MS);
@@ -505,12 +577,12 @@ function applyEngineStatus(status) {
         if (!online) {
             setCard(
                 "Helper not running",
-                'Start "Spidx Uploader.vbs" (or the desktop shortcut) — nothing is watching the incoming folder right now.',
+                'Start "Spidx Uploader.vbs" (or the desktop shortcut) - nothing is watching the incoming folder right now.',
                 "error"
             );
             setProgress(0);
         } else if (!busy) {
-            setCard("Ready", "Helper is running — export away.", "ok");
+            setCard("Ready", "Helper is running - export away.", "ok");
         }
     }
 
@@ -587,7 +659,7 @@ function applyBatchStatus(status) {
         var links = (status && status.links) || [];
         setCard(
             "Uploaded",
-            links.length ? "Link copied to the clipboard." : "Sent — no link was detected.",
+            links.length ? "Link copied to the clipboard." : "Sent - no link was detected.",
             "ok"
         );
         setSelectedBatchCount(1);
@@ -595,6 +667,7 @@ function applyBatchStatus(status) {
     }
 
     lastBatchState = state;
+    updateRenderBatchLock();
 }
 
 function poll() {
@@ -607,7 +680,7 @@ function poll() {
 }
 
 // The "Photoshop + Upload" button only makes sense once there's an
-// Action configured for it to run — read the same file the Dashboard
+// Action configured for it to run - read the same file the Dashboard
 // writes so this can never drift from what server.js will actually do
 // with the file.
 function updateRouteLine() {
@@ -619,9 +692,9 @@ function updateRouteLine() {
     if (uploadPsButton) uploadPsButton.disabled = busy || !hasPreset || !proAllowed;
     if (routeLine) {
         routeLine.textContent = !proAllowed
-            ? "Photoshop + Upload is a Pro feature — upgrade your tier to enable it."
+            ? "Photoshop + Upload is a Pro feature - upgrade your tier to enable it."
             : hasPreset
-                ? "Photoshop + Upload runs \u201c" + preset.actionName + "\u201d \u2014 requires Photoshop already open."
+                ? "Photoshop + Upload runs \u201c" + preset.actionName + "\u201d - requires Photoshop already open."
                 : "Set a Camera Raw Action in the Dashboard to enable Photoshop + Upload.";
     }
 }
@@ -672,13 +745,13 @@ function performUpload(viaPhotoshop) {
             // Not a hard block: the frame still lands in incoming and gets
             // picked up whenever the helper comes back. The panel just
             // stops pretending it was sent.
-            setCard("Helper not running", "Saving the frame anyway — it uploads when the helper starts.", "error");
+            setCard("Helper not running", "Saving the frame anyway - it uploads when the helper starts.", "error");
         }
 
         setCard("Saving frame...", "Exporting the current frame as PNG.");
         setProgress(45);
         // The second argument only changes the saved filename (adds a
-        // .ps marker before .png) — server.js's needsCameraRaw() is what
+        // .ps marker before .png) - server.js's needsCameraRaw() is what
         // actually decides whether to route it through Photoshop, based
         // on that marker plus a configured preset. See server.js.
         task = evalScript("spidxSaveFrame(" + esArg(incomingPath) + ", " + (viaPhotoshop ? "true" : "false") + ", " + esArg(presetOverride) + ")");
@@ -713,7 +786,7 @@ function finishUpload(error, result, activeButton, otherButton, defaultLabel) {
     if (selectedBatchCount > 1) {
         setCard(
             "Added to batch",
-            "Waiting for the rest (" + selectedBatchCount + " total) — export the next one the same way.",
+            "Waiting for the rest (" + selectedBatchCount + " total) - export the next one the same way.",
             "ok"
         );
     } else {
@@ -734,6 +807,155 @@ function finishUpload(error, result, activeButton, otherButton, defaultLabel) {
         }
     }, 2500);
 }
+
+/* ---------------------------------------------------------------------- */
+/*  Render video (Media Encoder) -> the helper uploads it when it is done   */
+/* ---------------------------------------------------------------------- */
+
+var RENDER_PRESET_KEY = "spidxRenderPreset";
+var RENDER_RANGE_KEY = "spidxRenderRange";
+var RENDER_CUSTOM_KEY = "spidxRenderCustomPresets"; // presets picked by hand, newline separated
+var renderVideoPresetSelect = document.getElementById("renderPresetSelect");
+var renderRangeSelect = document.getElementById("renderRangeSelect");
+var renderUploadButton = document.getElementById("renderUpload");
+var renderLine = document.getElementById("renderLine");
+var renderPresetItems = [];
+
+function renderCustomPaths() {
+    var raw = store.get(RENDER_CUSTOM_KEY) || "";
+    return raw.split("\n").filter(function (p) { return p.length > 0; });
+}
+
+function renderBaseName(path) {
+    return String(path).replace(/^.*[\\\/]/, "").replace(/\.epr$/i, "");
+}
+
+function renderFillSelect() {
+    var chosen = store.get(RENDER_PRESET_KEY) || "";
+    renderVideoPresetSelect.innerHTML = "";
+    var groups = {};
+    var order = [];
+    function add(group, name, path) {
+        if (!groups[group]) {
+            var og = document.createElement("optgroup");
+            og.label = group;
+            groups[group] = og;
+            order.push(group);
+        }
+        var opt = document.createElement("option");
+        opt.value = path;
+        opt.textContent = name;
+        groups[group].appendChild(opt);
+    }
+    var custom = renderCustomPaths();
+    for (var c = 0; c < custom.length; c++) add("Chosen by you", renderBaseName(custom[c]), custom[c]);
+    for (var i = 0; i < renderPresetItems.length; i++) add(renderPresetItems[i].group, renderPresetItems[i].name, renderPresetItems[i].path);
+    var wanted = ["Chosen by you", "My presets", "Built-in"];
+    for (var w = 0; w < wanted.length; w++) if (groups[wanted[w]]) renderVideoPresetSelect.appendChild(groups[wanted[w]]);
+
+    if (renderVideoPresetSelect.options.length === 0) {
+        var empty = document.createElement("option");
+        empty.value = "";
+        empty.textContent = "No presets found";
+        renderVideoPresetSelect.appendChild(empty);
+        renderLine.textContent = 'No export presets found - use "Choose another .epr preset...".';
+        return;
+    }
+    renderLine.textContent = "";
+    var found = false;
+    for (var o = 0; o < renderVideoPresetSelect.options.length; o++) {
+        if (renderVideoPresetSelect.options[o].value === chosen) { renderVideoPresetSelect.selectedIndex = o; found = true; break; }
+    }
+    if (!found) renderVideoPresetSelect.selectedIndex = 0;
+}
+
+function renderLoadPresets() {
+    evalScript("spidxListRenderPresets()").then(function (result) {
+        renderPresetItems = result.items || [];
+        renderFillSelect();
+        if (result.capped) renderLine.textContent = "Showing the first 400 presets.";
+    }).catch(function () {
+        renderPresetItems = [];
+        renderFillSelect();
+    });
+}
+
+renderVideoPresetSelect.addEventListener("change", function () { store.set(RENDER_PRESET_KEY, renderVideoPresetSelect.value); });
+renderRangeSelect.addEventListener("change", function () { store.set(RENDER_RANGE_KEY, renderRangeSelect.value); });
+renderRangeSelect.value = store.get(RENDER_RANGE_KEY) || "inout";
+if (renderRangeSelect.selectedIndex < 0) renderRangeSelect.value = "inout";
+
+document.getElementById("renderReload").addEventListener("click", renderLoadPresets);
+document.getElementById("renderBrowse").addEventListener("click", function () {
+    var result = window.cep.fs.showOpenDialog(false, false, "Choose a Media Encoder preset (.epr)", "");
+    if (!result || result.err !== 0 || !result.data || !result.data.length) return;
+    var picked = String(result.data[0]);
+    if (!/\.epr$/i.test(picked)) { renderLine.textContent = "That is not a .epr preset file."; return; }
+    var custom = renderCustomPaths().filter(function (p) { return p !== picked; });
+    custom.unshift(picked);
+    store.set(RENDER_CUSTOM_KEY, custom.slice(0, 12).join("\n"));
+    store.set(RENDER_PRESET_KEY, picked);
+    renderFillSelect();
+});
+
+
+// AE / Premiere block their own script engine for the whole render, so the panel cannot ask for a real
+// percentage - but the panel itself keeps running, so it can at least show a live clock.
+var renderClock = null;
+function renderClockStart(button, idleLabel, what) {
+    var startedAt = Date.now();
+    function tick() {
+        var secs = Math.floor((Date.now() - startedAt) / 1000);
+        var clock = Math.floor(secs / 60) + ":" + (secs % 60 < 10 ? "0" : "") + (secs % 60);
+        button.textContent = "Rendering... " + clock;
+        setCard("Rendering", what() + " " + clock + " - the host app stays busy until the render is finished.");
+    }
+    tick();
+    renderClock = setInterval(tick, 1000);
+}
+function renderClockStop() { if (renderClock) { clearInterval(renderClock); renderClock = null; } }
+
+renderUploadButton.addEventListener("click", function () {
+    if (busy) return;
+    if (renderBlockedByBatch()) { setCard("Batches are for thumbnails", "Set Files per upload to 1 to render a video.", "error"); return; }
+    if (rendersLimitReached()) { rendersLimitCard(); return; }
+    var presetPath = renderVideoPresetSelect.value;
+    if (!presetPath) { setCard("Pick a preset", "Choose a render preset first.", "error"); return; }
+
+    busy = true;
+    renderUploadButton.disabled = true;
+    renderClockStart(renderUploadButton, "Render & upload", function () {
+        var opt = renderVideoPresetSelect.options[renderVideoPresetSelect.selectedIndex];
+        return (opt ? opt.textContent : "") + " \u00b7";
+    });
+    var task;
+    try {
+        ensureIncomingFolder(false);
+        if (engineOnline === false) setCard("Helper not running", "The render goes ahead anyway - it uploads when the helper starts.", "error");
+        task = evalScript("spidxRenderSequence(" + esArg(incomingPath) + ", " + esArg(presetPath) + ", " + esArg(renderRangeSelect.value) + ")");
+    } catch (error) {
+        renderClockStop();
+        busy = false;
+        renderUploadButton.disabled = false;
+        renderUploadButton.textContent = "Render & upload";
+        setCard("Error", error.message, "error");
+        return;
+    }
+    task.then(function (result) {
+        renderClockStop();
+        if (result.via === "media-encoder") setCard("Queued in Media Encoder", result.seq + " (" + result.range + ", " + result.preset + "). It uploads by itself when Media Encoder finishes.", "ok");
+        else setCard("Render finished", result.seq + " (" + result.range + ", " + result.preset + ") -> " + result.name + ". The helper is uploading it now.", "ok");
+        renderUploadButton.textContent = "Done";
+    }).catch(function (error) {
+        renderClockStop();
+        setCard("Error", error.message, "error");
+        renderUploadButton.textContent = "Try again";
+    }).then(function () {
+        busy = false;
+        renderUploadButton.disabled = false;
+        setTimeout(function () { renderUploadButton.textContent = "Render & upload"; }, 3000);
+    });
+});
 
 uploadButton.addEventListener("click", function () { performUpload(false); });
 if (uploadPsButton) uploadPsButton.addEventListener("click", function () { performUpload(true); });
@@ -765,7 +987,7 @@ function activateTab(target) {
     if (target === "tabLeaderboard" && !lbLoadedOnce) lbLoad();
     if (target === "tabProps") {
         if (!lbLoadedOnce) lbLoad();
-        propsRefresh(); // immediate — poll() then keeps it live every POLL_MS without a manual Refresh
+        propsRefresh(); // immediate - poll() then keeps it live every POLL_MS without a manual Refresh
     }
     if (target === "tabMogrt") updateMogrtLock(); // loads the templates the first time, when the role allows it
 }
@@ -774,20 +996,19 @@ for (var ti = 0; ti < tabButtons.length; ti++) {
     tabButtons[ti].addEventListener("click", function () { activateTab(this.getAttribute("data-tab")); });
 }
 
-updateProFeatureLocks(); // initial paint — starts locked until the first engine-status read confirms tier
+updateProFeatureLocks(); // initial paint - starts locked until the first engine-status read confirms tier
 
 /* ------------------------------------------------------------------ */
-/*  Leaderboard tab — SpidxTracker (Fortnite)                           */
+/*  Leaderboard tab - SpidxTracker (Fortnite)                           */
 /*                                                                      */
 /*  Ported from the standalone SpidxLeaderboardPanel.jsx ScriptUI       */
 /*  panel. Fetching and rendering happen here in plain JS (a CEP panel  */
-/*  is just Chromium — fetch()/DOM beats the old raw-Socket-and-temp-   */
+/*  is just Chromium - fetch()/DOM beats the old raw-Socket-and-temp-   */
 /*  .bat-file approach that ScriptUI needed). Only touching the actual  */
 /*  AE layer (insert / Essential Graphics) still goes through           */
-/*  ExtendScript — see spidxLeaderboardInsertAndExpose() in spidx.jsx.  */
+/*  ExtendScript - see spidxLeaderboardInsertAndExpose() in spidx.jsx.  */
 /* ------------------------------------------------------------------ */
 
-var LB_API_HOST = "http://169.58.221.14:8080";
 var LB_CACHE_NAME = ".leaderboard-cache.json";
 
 var lbRegion = $("lbRegion");
@@ -835,7 +1056,7 @@ function lbUseCache(reasonWhyLive) {
     }
     lbPlayers = cache.players;
     lbRenderRows();
-    lbStatus.textContent = "Offline \u2014 cached data from " + lbCacheAgeText(cache.savedAt)
+    lbStatus.textContent = "Offline - cached data from " + lbCacheAgeText(cache.savedAt)
         + " (" + lbPlayers.length + " players) \u00b7 " + reasonWhyLive;
     lbStatus.className = "card-sub error";
 }
@@ -858,7 +1079,7 @@ function lbRenderRows() {
     lbSelectedIndex = -1;
     lbCopyBtn.disabled = true;
     lbMessage.textContent = "";
-    propsShowSelectedNick(null); // list just changed/refreshed — the old selection no longer applies
+    propsShowSelectedNick(null); // list just changed/refreshed - the old selection no longer applies
 
     if (!lbPlayers.length) {
         var empty = document.createElement("div");
@@ -915,6 +1136,33 @@ function lbQuery() {
     return parts.length ? ("?" + parts.join("&")) : "";
 }
 
+var LB_REQUEST_NAME = ".leaderboard-request.json";
+var LB_RESULT_NAME = ".leaderboard-result.json";
+
+// The leaderboard server sends no CORS headers; instead of switching Chromium's web security off for the
+// whole panel, the helper fetches it for us (App\\server.js, checkLeaderboardRequest) via two small files.
+function lbRequest(query) {
+    return new Promise(function (resolve, reject) {
+        if (!incomingPath) { reject(new Error("Link the incoming folder first (Change incoming folder).")); return; }
+        var id = String(Date.now()) + "-" + Math.random().toString(16).slice(2);
+        try { writeTextFile(joinPath(incomingPath, LB_REQUEST_NAME), JSON.stringify({ id: id, query: query })); }
+        catch (e) { reject(new Error("Could not talk to the helper: " + e.message)); return; }
+        var started = Date.now();
+        var timer = setInterval(function () {
+            var result = readJsonFile(joinPath(incomingPath, LB_RESULT_NAME));
+            if (result && result.id === id) {
+                clearInterval(timer);
+                if (result.ok) resolve(result.json); else reject(new Error(result.error || "The helper could not reach the leaderboard server."));
+                return;
+            }
+            if (Date.now() - started > 12000) {
+                clearInterval(timer);
+                reject(new Error("The helper did not answer - is Spidx Uploader running? (tray icon)"));
+            }
+        }, 250);
+    });
+}
+
 function lbLoad() {
     lbLoadedOnce = true;
     lbCopyBtn.disabled = true;
@@ -922,15 +1170,7 @@ function lbLoad() {
     lbStatus.textContent = "Loading...";
     lbStatus.className = "card-sub";
 
-    var controller = (typeof AbortController !== "undefined") ? new AbortController() : null;
-    var timeoutId = controller ? setTimeout(function () { controller.abort(); }, 5000) : null;
-
-    fetch(LB_API_HOST + "/api/fortnite" + lbQuery(), controller ? { signal: controller.signal } : {})
-        .then(function (res) {
-            if (timeoutId) clearTimeout(timeoutId);
-            if (!res.ok) throw new Error("Server responded with " + res.status);
-            return res.json();
-        })
+    lbRequest(lbQuery())
         .then(function (json) {
             if (!json || !json.success) {
                 lbUseCache("API responded, but without the expected data.");
@@ -949,7 +1189,6 @@ function lbLoad() {
             lbStatus.className = "card-sub ok";
         })
         .catch(function (err) {
-            if (timeoutId) clearTimeout(timeoutId);
             lbUseCache(err && err.message ? err.message : "Could not reach the leaderboard server.");
         });
 }
@@ -990,7 +1229,7 @@ lbSearch.addEventListener("input", function () {
 });
 
 /* ------------------------------------------------------------------ */
-/*  Properties tab — push a Leaderboard nick into an Essential          */
+/*  Properties tab - push a Leaderboard nick into an Essential          */
 /*  Graphics (MOGRT) text property on the clip selected in the          */
 /*  Timeline. See spidxListGraphicTextProperties() / spidxSetGraphicText() */
 /*  in host/spidx.jsx for the ExtendScript side of this.                */
@@ -1004,7 +1243,7 @@ var propsApplyBtn = $("propsApply");
 var propsMessage = $("propsMessage");
 var propsApplying = false; // guards against poll()'s auto-refresh rebuilding the dropdown mid-click
 
-// Reflects whatever's selected on the Leaderboard tab — no separate big
+// Reflects whatever's selected on the Leaderboard tab - no separate big
 // dropdown to pick from twice, clicking a row there is the picker.
 // Manual typing in propsNickInput still works and isn't overwritten by
 // this except right when a new Leaderboard row is clicked.
@@ -1020,7 +1259,7 @@ function propsShowSelectedNick(nick) {
 }
 
 // Called once when the tab is opened and then automatically from
-// poll() every POLL_MS while it's the active tab — no manual Refresh
+// poll() every POLL_MS while it's the active tab - no manual Refresh
 // button needed, it just tracks whatever's selected on the Timeline.
 // The dropdown is rebuilt each call, but the previously-picked property
 // is restored if it's still in the new list, so re-polling doesn't
@@ -1055,7 +1294,7 @@ function propsRefresh() {
             });
             if (names.indexOf(previousChoice) !== -1) propsSelect.value = previousChoice;
 
-            propsStatus.textContent = "\"" + result.clip + "\" \u2014 " + names.length
+            propsStatus.textContent = "\"" + result.clip + "\" - " + names.length
                 + " text propert" + (names.length === 1 ? "y" : "ies") + " found.";
             propsStatus.className = "card-sub ok";
             propsApplyBtn.disabled = false;
@@ -1129,7 +1368,7 @@ function mogrtCollapsedList() {
 // itself (cep.fs) - it does not depend on ExtendScript guessing the panel's
 // folder. ExtendScript is only the fallback.
 function mogrtsReadList() {
-    var root = extensionPath();
+    var root = packRootPPRO();
     var text = root ? readTextFile(joinPath(root, "mogrts/mogrts.json")) : null;
     if (text) {
         try {
@@ -1148,9 +1387,7 @@ function mogrtsLoad() {
     mogrtsReadList().then(function (result) {
         mogrtItems = result.items || [];
         if (!mogrtItems.length) {
-            mogrtsStatusEl.textContent = result.missing
-                ? "No templates found - the panel's mogrts folder is missing (looked in: " + (result.root || extensionPath() || "?") + "\\mogrts). Reinstall the Premiere Pro panel."
-                : "No templates bundled with this panel yet.";
+            mogrtsStatusEl.textContent = packEmptyMessage("templates");
             return;
         }
         mogrtsStatusEl.textContent = "Click a template to put it on the timeline at the playhead (on a free track above V1).";
@@ -1167,7 +1404,9 @@ function mogrtMatches(item, query) {
 }
 
 function mogrtThumbUrl(relative) {
-    return "../mogrts/" + String(relative).split("/").map(encodeURIComponent).join("/");
+    // an absolute file URL: the previews live in the Pack folder, not next to the panel
+    var root = packRootPPRO().replace(/\\/g, "/");
+    return "file:///" + encodeURI(root) + "/mogrts/" + String(relative).split("/").map(encodeURIComponent).join("/");
 }
 
 function mogrtTile(item, index) {
@@ -1175,7 +1414,7 @@ function mogrtTile(item, index) {
     tile.type = "button";
     tile.className = "mg-tile";
     tile.style.animationDelay = Math.min(index || 0, 12) * 35 + "ms"; // tiles slide in one after another
-    tile.title = (item.description ? item.description + " \u2014 " : "") + "click to insert at the playhead";
+    tile.title = (item.description ? item.description + " - " : "") + "click to insert at the playhead";
 
     var box = document.createElement("div");
     box.className = "mg-thumb";
@@ -1347,7 +1586,7 @@ function mogrtInsert(item, tile) {
     }
 
     // nick fill uses the same Pro gate as the Properties tab
-    evalScript("spidxInsertMogrt(" + esArg(item.file) + ", " + esArg(nick) + ", " + esArg(tierAllowsProperties() ? "true" : "false") + ", " + esArg(extensionPath()) + ", " + esArg(item.textParam || "") + ")")
+    evalScript("spidxInsertMogrt(" + esArg(item.file) + ", " + esArg(nick) + ", " + esArg(tierAllowsProperties() ? "true" : "false") + ", " + esArg(packRootPPRO()) + ", " + esArg(item.textParam || "") + ")")
         .then(function (result) {
             var msg = "Inserted \"" + (item.name || item.file) + "\" on " + result.track + " at the playhead";
             if (result.textApplied) msg += " with \"" + nick + "\"";
@@ -1469,7 +1708,7 @@ presetSelect.addEventListener("change", function () {
         presetSwitching = false;
         presetSelect.disabled = false;
         presetListKey = "";   // re-read the list on the next status
-        if (answered && result.ok) setCard("Preset applied", name + (result.message ? " \u2014 " + result.message : ""), "ok");
+        if (answered && result.ok) setCard("Preset applied", name + (result.message ? " - " + result.message : ""), "ok");
         else setCard("Preset not applied", answered ? (result.message || "The helper refused it.") : "The helper didn't answer - is it running?", "error");
     }, 200);
 });
@@ -1496,11 +1735,12 @@ presetSelect.addEventListener("change", function () {
         setCard("Link the incoming folder", 'Click "Change incoming folder" and pick App\\incoming.');
     } else {
         evalScript("spidxContext()").then(function (context) {
-            if (context.hasComp) setCard("Ready", context.comp + " — frame " + context.frame);
+            if (context.hasComp) setCard("Ready", context.comp + " - frame " + context.frame);
             else setCard("Ready", "No sequence active yet.");
         }).catch(function () { /* panel still works; the first click reports the real error */ });
     }
 
+    renderLoadPresets();
     poll();
     setInterval(poll, POLL_MS);
 })();

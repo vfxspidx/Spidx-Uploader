@@ -5,7 +5,7 @@
  *
  *  Both the Drive upload backend (drive.js) and the Pro/Free/Dev/Tester
  *  tier check (license.js) authenticate through THIS one module, so
- *  there's only ONE login moment per installation — not a separate one
+ *  there's only ONE login moment per installation - not a separate one
  *  for Drive and another for the tier check.
  *
  *  Scopes cover both needs from the start:
@@ -33,7 +33,7 @@ let oAuth2Client = null;
 let cachedClientPromise = null;
 
 function log(...args) {
-    console.log("[SE][Google]", ...args);
+    console.log("[SE3][Google]", ...args);
 }
 
 function readDriveConfig() {
@@ -135,7 +135,7 @@ function runInteractiveAuth(google, clientId, clientSecret) {
                 scope: SCOPES
             });
 
-            log("One-time Google sign-in needed — opening your browser...");
+            log("One-time Google sign-in needed - opening your browser...");
             log("If it doesn't open automatically, visit this URL:");
             log(authUrl);
             openInBrowser(authUrl);
@@ -193,12 +193,12 @@ async function getUserEmail() {
 }
 
 // Returns a fresh Google-signed ID token (a JWT) proving who's actually
-// signed in — this is what license.js now sends to the tier-check
+// signed in - this is what license.js now sends to the tier-check
 // endpoint INSTEAD of a bare email string, so the backend can verify
 // identity itself (via Google's tokeninfo endpoint) rather than trusting
 // whatever email the client claims. Requires "openid" in SCOPES above,
 // which is already there. getAccessToken() forces a refresh first if the
-// current access/ID token pair is stale (~1h lifetime) — the refresh
+// current access/ID token pair is stale (~1h lifetime) - the refresh
 // response includes a new id_token as long as the original login
 // requested the openid scope, same as this one did.
 async function getIdToken() {
@@ -206,7 +206,7 @@ async function getIdToken() {
     await client.getAccessToken();
     const idToken = client.credentials && client.credentials.id_token;
     if (!idToken) {
-        throw new Error("No Google ID token available — try \"Reset Google sign-in\" from the tray menu.");
+        throw new Error("No Google ID token available - try \"Reset Google sign-in\" from the tray menu.");
     }
     return idToken;
 }

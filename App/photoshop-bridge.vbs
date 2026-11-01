@@ -1,4 +1,4 @@
-' Spidx Uploader — Photoshop bridge launcher.
+' Spidx Uploader - Photoshop bridge launcher.
 '
 ' Attaches to an ALREADY RUNNING Photoshop over COM and hands it the job
 ' .jsx script, passing the remaining command-line arguments straight

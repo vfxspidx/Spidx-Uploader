@@ -57,6 +57,8 @@ xcopy "%SRC%CSXS" "%DEST%\CSXS\" /e /i /y >nul
 xcopy "%SRC%client" "%DEST%\client\" /e /i /y >nul
 xcopy "%SRC%host" "%DEST%\host\" /e /i /y >nul
 xcopy "%SRC%icons" "%DEST%\icons\" /e /i /y >nul
+if exist "%SRC%presets" xcopy "%SRC%presets" "%DEST%\presets\" /e /i /y >nul
+if exist "%SRC%templates" xcopy "%SRC%templates" "%DEST%\templates\" /e /i /y >nul
 
 if not exist "%DEST%\CSXS\manifest.xml" (
     echo.

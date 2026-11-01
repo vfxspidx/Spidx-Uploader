@@ -5,14 +5,14 @@
  *
  *  Routes a raw PNG frame saved by the After Effects panel through the
  *  same Camera Raw Action the Photoshop panel already applies on its own
- *  manual uploads (config.cameraRawPreset, set once in the Dashboard —
+ *  manual uploads (config.cameraRawPreset, set once in the Dashboard -
  *  see dashboard.js / server.js's syncDefaultCameraRawPreset()). This is
  *  what makes the single Upload button in AE do "save frame -> Camera
  *  Raw -> upload" without any extra destination or per-click choice.
  *
  *  Deliberately does NOT launch Photoshop. It attaches to an ALREADY
  *  RUNNING instance over COM (GetObject in the .vbs helper below) and
- *  hands it a static .jsx job via DoJavaScriptFile — the same mechanism
+ *  hands it a static .jsx job via DoJavaScriptFile - the same mechanism
  *  Adobe's own scripting samples use to drive Photoshop from outside.
  *  If Photoshop isn't open, GetObject fails immediately and cleanly,
  *  which is exactly the "not open" signal server.js needs to fall back
@@ -26,7 +26,7 @@ const { execFile } = require("child_process");
 const BRIDGE_VBS = path.join(__dirname, "photoshop-bridge.vbs");
 const BRIDGE_JSX = path.join(__dirname, "host", "photoshop-camera-raw.jsx");
 
-// `execFile("cscript", ...)` relies on Windows resolving it via PATH —
+// `execFile("cscript", ...)` relies on Windows resolving it via PATH -
 // which fails with ENOENT (as opposed to a real error from cscript
 // itself) in some launch contexts (services, some tray/packaged-app
 // setups, a trimmed PATH) even though cscript.exe is always present in
@@ -35,16 +35,16 @@ const BRIDGE_JSX = path.join(__dirname, "host", "photoshop-camera-raw.jsx");
 const SYSTEM_ROOT = process.env.SystemRoot || process.env.windir || "C:\\Windows";
 const CSCRIPT_PATH = path.join(SYSTEM_ROOT, "System32", "cscript.exe");
 // Fall back to plain "cscript" (old PATH-based behavior) only if the
-// expected System32 copy genuinely isn't there — better than hard-failing
+// expected System32 copy genuinely isn't there - better than hard-failing
 // on a path assumption that doesn't hold on some machine.
 const CSCRIPT_BIN = fs.existsSync(CSCRIPT_PATH) ? CSCRIPT_PATH : "cscript";
 
 // Runs the configured Camera Raw Action on inputPath inside the already-
 // running Photoshop, saving the result as a new JPG next to it (same
-// incoming folder — Spider Engine's own folder scan picks the new
+// incoming folder - Spider Engine's own folder scan picks the new
 // filename up from there like any other file, no special-casing needed).
 // Resolves { ok: true, outputPath } or { ok: false, error }. Never
-// rejects — callers always get a clean result to branch on.
+// rejects - callers always get a clean result to branch on.
 function runCameraRaw(inputPath, preset) {
     return new Promise(resolve => {
         const actionSet = String((preset && preset.actionSet) || "");

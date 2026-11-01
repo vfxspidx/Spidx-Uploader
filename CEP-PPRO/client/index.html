@@ -2,7 +2,7 @@
 <html>
 <head>
 <meta charset="UTF-8">
-<title>Spidx Uploader — Premiere Pro</title>
+<title>Spidx Uploader - Premiere Pro</title>
 <style>
     :root {
         --bg: #1c1c1e;
@@ -32,7 +32,7 @@
     .panel { padding: 12px 13px 16px; }
 
     /* CEP's panel is plain Chromium, so a custom (thin, dark) scrollbar
-       is just normal -webkit-scrollbar CSS — applies to the whole panel
+       is just normal -webkit-scrollbar CSS - applies to the whole panel
        and to any inner scrolling area (e.g. the Leaderboard rows) alike,
        instead of the stock light OS scrollbar clashing with this theme. */
     ::-webkit-scrollbar { width: 9px; height: 9px; }
@@ -283,6 +283,36 @@
     .lb-item .pts { text-align: right; font-variant-numeric: tabular-nums; }
     .lb-head span:last-child { text-align: right; }
     .lb-empty { padding: 16px 10px; text-align: center; color: var(--dim); font-size: 11.5px; }
+
+    /* ===== glass look - same visual language as the Dashboard =====
+       Translucent surfaces over a soft colour backdrop. Chromium builds inside CEP that know
+       backdrop-filter get the blur too; older ones just see the translucent surfaces. */
+    :root {
+        --surface: rgba(255,255,255,.075);
+        --surface-2: rgba(255,255,255,.13);
+        --line: rgba(255,255,255,.14);
+        --glass-hi: inset 0 1px 0 rgba(255,255,255,.16);
+    }
+    html, body { background: transparent; }
+    html { background: #05060a; }
+    body::before {
+        content: ""; position: fixed; left: 0; top: 0; right: 0; bottom: 0; z-index: -1; pointer-events: none;
+        background:
+            radial-gradient(280px 220px at 8% 0%,   rgba(10,132,255,.40), transparent 70%),
+            radial-gradient(260px 220px at 100% 14%, rgba(100,210,255,.20), transparent 70%),
+            radial-gradient(320px 280px at 82% 100%, rgba(138,92,255,.28), transparent 70%),
+            #05060a;
+    }
+    .card, .file-row, .lb-table, .mg-tile, .seg button, .tab-btn, .lb-refresh, .lb-search, select, input[type="text"] { box-shadow: var(--glass-hi); }
+    .btn { background: linear-gradient(180deg, #2f95ff, #0a84ff 55%, #0070e6); box-shadow: inset 0 1px 0 rgba(255,255,255,.35), 0 4px 12px -6px rgba(10,132,255,.9); }
+    .btn.secondary { background: rgba(255,255,255,.12); box-shadow: var(--glass-hi); }
+    .btn.success { background: linear-gradient(180deg, #3adf6c, #30d158); }
+    .btn.error { background: linear-gradient(180deg, #ff6b62, #ff453a); }
+    .tab-btn.active { background: linear-gradient(180deg, #2f95ff, #0a84ff); }
+    select option { background: #1c1c1e; color: #f5f5f7; }
+    @supports ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+        .card, .file-row, .lb-table, .seg button, .tab-btn, .batch-progress { -webkit-backdrop-filter: blur(14px) saturate(1.5); backdrop-filter: blur(14px) saturate(1.5); }
+    }
 </style>
 </head>
 <body>
@@ -302,7 +332,7 @@
 
     <div class="tab-page active" id="tabUploader">
     <div class="warn-box" id="deviceLimitWarning">
-        Device limit reached — this computer counts as a 3rd device on a paid tier, so it runs as Free here.
+        Device limit reached - this computer counts as a 3rd device on a paid tier, so it runs as Free here.
     </div>
 
     <div class="card" id="card">
@@ -335,11 +365,33 @@
     </div>
     <div class="card-sub" id="routeLine" style="margin-top:6px;"></div>
 
+    <div class="label" style="margin-top: 16px;">Render video</div>
+    <div class="lb-row">
+        <span class="lb-label">Preset</span>
+        <select id="renderPresetSelect"></select>
+    </div>
+    <div class="lb-row">
+        <span class="lb-label">Range</span>
+        <select id="renderRangeSelect">
+            <option value="inout">In to Out</option>
+            <option value="entire">Entire sequence</option>
+            <option value="workarea">Work area</option>
+        </select>
+    </div>
+    <div class="btn-row">
+        <button class="btn" id="renderUpload">Render &amp; upload</button>
+    </div>
+    <div class="card-sub" id="renderLine" style="margin-top:6px;"></div>
+    <div class="foot">
+        <span class="link" id="renderBrowse">Choose another .epr preset...</span>
+        <span class="link" id="renderReload">Refresh list</span>
+    </div>
+
     <div class="file-row" id="fileRow">
         <div class="file-thumb" id="fileThumb">PNG</div>
         <div class="file-meta">
-            <div class="file-name" id="fileName">—</div>
-            <div class="file-size" id="fileSize">—</div>
+            <div class="file-name" id="fileName">-</div>
+            <div class="file-size" id="fileSize">-</div>
         </div>
     </div>
 
@@ -407,7 +459,7 @@
         </div>
         <div id="mogrtBody">
             <input type="text" id="mogrtSearch" class="lb-search" placeholder="Search templates...">
-            <input type="text" id="mogrtNickInput" class="lb-search" placeholder="Nick for the graphic (optional) — or click a row on Leaderboard">
+            <input type="text" id="mogrtNickInput" class="lb-search" placeholder="Nick for the graphic (optional) - or click a row on Leaderboard">
             <div class="card-sub" id="mogrtsStatus">Loading...</div>
             <div id="mogrtsList"></div>
             <div class="card-sub" id="mogrtMessage"></div>
@@ -416,6 +468,7 @@
 
 </div>
 
+<script src="panel-i18n.js"></script>
 <script src="./index.js"></script>
 </body>
 </html>

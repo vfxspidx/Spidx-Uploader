@@ -1,5 +1,5 @@
 /* ========================================================================
- *  Spidx Uploader — After Effects host layer (ExtendScript)
+ *  Spidx Uploader - After Effects host layer (ExtendScript)
  *
  *  After Effects has no UXP panel framework (only scripting-level UXP
  *  APIs), so the AE half of this plugin is CEP + ExtendScript while the
@@ -9,11 +9,11 @@
  *
  *  Scope is deliberately one operation: "Save Frame As > File" of the
  *  active comp's current frame, always PNG. No render queue involvement
- *  at all — that kept output-module templates, locale-dependent template
+ *  at all - that kept output-module templates, locale-dependent template
  *  names, half-written movies and hour-long blocking renders out of the
  *  picture entirely.
  *
- *  Every function here returns a JSON *string* — CEP's evalScript can
+ *  Every function here returns a JSON *string* - CEP's evalScript can
  *  only hand back strings, and ExtendScript has no JSON object.
  * ==================================================================== */
 
@@ -45,7 +45,7 @@ function spidxFail(message) {
 }
 
 // app.project.activeItem only reflects a comp once its own
-// Composition/Timeline panel has had focus — opening a second comp and
+// Composition/Timeline panel has had focus - opening a second comp and
 // clicking straight back into this CEP panel to hit Upload leaves
 // activeItem pointing at whichever comp's viewer was focused first.
 // Falling back to a single selected CompItem in the Project panel
@@ -67,7 +67,7 @@ function spidxActiveComp() {
 // on the After Effects build, cep.fs.showOpenDialog hands back
 // "C:\\Users\\...", "C:/Users/..." or the URI-ish "/C/Users/...", and
 // ExtendScript's Folder() silently resolves the last one relative to the
-// drive root — which is exactly how a perfectly valid incoming folder
+// drive root - which is exactly how a perfectly valid incoming folder
 // ended up reported as "After Effects did not write the frame": the
 // folder the frame was written into never existed.
 function spidxResolveFolder(raw) {
@@ -99,7 +99,7 @@ function spidxStamp() {
 }
 
 /* ---------------------------------------------------------------------- *
- *  Context — what the panel shows before you click anything
+ *  Context - what the panel shows before you click anything
  * ---------------------------------------------------------------------- */
 function spidxContext() {
     try {
@@ -134,20 +134,20 @@ function spidxSaveFrame(incomingPath, viaPhotoshop) {
 
     try {
         var comp = spidxActiveComp();
-        if (!comp) return spidxFail("No composition is active — click a composition in the Project panel or open its Timeline, then try again.");
+        if (!comp) return spidxFail("No composition is active - click a composition in the Project panel or open its Timeline, then try again.");
 
         var folder = spidxResolveFolder(incomingPath);
         var baseName = spidxStamp();
         // The ".ps" marker is the only thing that tells server.js this
         // frame should be routed through Photoshop's Camera Raw Action
-        // before it uploads — see needsCameraRaw() in server.js. Without
+        // before it uploads - see needsCameraRaw() in server.js. Without
         // it, a frame always uploads as-is, even if a preset is
         // configured in the Dashboard; the choice is made here, per
         // click, not globally.
         var suffix = viaPhotoshop ? ".ps.png" : ".png";
         partFile = new File(folder.fsName + "/" + baseName + SPIDX_PART_EXT);
 
-        app.beginUndoGroup("Spidx — save frame");
+        app.beginUndoGroup("Spidx - save frame");
         try {
             comp.saveFrameToPng(comp.time, partFile);
         } finally {
@@ -167,7 +167,7 @@ function spidxSaveFrame(incomingPath, viaPhotoshop) {
         }
         if (partFile.length === 0) {
             try { partFile.remove(); } catch (e) {}
-            return spidxFail("After Effects wrote an empty frame — is the composition resolution set to something renderable?");
+            return spidxFail("After Effects wrote an empty frame - is the composition resolution set to something renderable?");
         }
 
         // Only now does the file get the name (and extension) the engine
@@ -176,9 +176,9 @@ function spidxSaveFrame(incomingPath, viaPhotoshop) {
         if (finalFile.exists) { try { finalFile.remove(); } catch (e) {} }
 
         var size = partFile.length;
-        // A rename can transiently fail right after a file is written —
+        // A rename can transiently fail right after a file is written -
         // most commonly antivirus/real-time-scan briefly holding a lock
-        // on the just-created file — so retry a few times before giving
+        // on the just-created file - so retry a few times before giving
         // up instead of failing on the first try.
         var renamed = false;
         for (var attempt = 0; attempt < 8 && !renamed; attempt++) {
@@ -187,7 +187,7 @@ function spidxSaveFrame(incomingPath, viaPhotoshop) {
         }
         if (!renamed) {
             return spidxFail("Could not rename the finished frame to " + baseName + suffix
-                + " (another process — often antivirus real-time scanning — may still have it locked; try Upload again).");
+                + " (another process - often antivirus real-time scanning - may still have it locked; try Upload again).");
         }
 
         return '{"ok":true,"name":"' + spidxEscape(baseName + suffix) + '","size":' + size
@@ -199,11 +199,11 @@ function spidxSaveFrame(incomingPath, viaPhotoshop) {
 }
 
 /* ========================================================================
- *  Leaderboard tab — text-layer / Essential Graphics helpers
+ *  Leaderboard tab - text-layer / Essential Graphics helpers
  *
  *  Ported from the standalone SpidxLeaderboardPanel.jsx (ScriptUI dockable
  *  panel). The leaderboard data-fetching, table, search/region filter and
- *  clipboard copy all moved to the CEP side (client/index.js) — a CEP
+ *  clipboard copy all moved to the CEP side (client/index.js) - a CEP
  *  panel can just fetch() and use the DOM directly, so none of that
  *  ExtendScript-Socket/temp-bat-file plumbing from the original script is
  *  needed here anymore. All that's left on the ExtendScript side is what
@@ -245,7 +245,7 @@ function spidxInsertIntoSelectedTextLayer(text) {
 // Known AE quirks this works around:
 // - addToMotionGraphicsTemplateAs() can throw on some AE builds/localized
 //   UIs even when the plain addToMotionGraphicsTemplate() (default name)
-//   works fine — so it falls back to that automatically.
+//   works fine - so it falls back to that automatically.
 // - canAddToMotionGraphicsTemplate() returning false almost always means
 //   the property is already exposed (not a real error), so that's
 //   reported explicitly instead of a generic "could not add".
@@ -287,7 +287,7 @@ function spidxExposeNickAsEssentialProperty() {
 }
 
 // Called from the panel's "Insert + Essential Graphics" button. Inserts
-// first, then tries to expose — if exposing fails (e.g. already added),
+// first, then tries to expose - if exposing fails (e.g. already added),
 // the insert itself still counts as a success.
 function spidxLeaderboardInsertAndExpose(text, alsoExpose) {
     try {
@@ -312,15 +312,15 @@ function spidxLeaderboardInsertAndExpose(text, alsoExpose) {
 }
 
 /* ========================================================================
- *  Search tab — Animation Presets + "Nest" (precompose)
+ *  Search tab - Animation Presets + "Nest" (precompose)
  *
  *  Not a port of FX Console (its search/overlay logic is compiled into
- *  FXConsole.aex, closed-source, never inspected) — this is a from-
+ *  FXConsole.aex, closed-source, never inspected) - this is a from-
  *  scratch implementation using only documented AE scripting: File.
  *  applyPreset() for presets, layers.precompose() for nest.
  * ==================================================================== */
 
-// Presets live in two standard, documented locations — nothing guessed
+// Presets live in two standard, documented locations - nothing guessed
 // or hardcoded per-machine:
 //   - Folder.appFolder/Support Files/Presets  (AE's own bundled presets)
 //   - Documents/Adobe/After Effects/<any version>/User Presets
@@ -404,5 +404,349 @@ function spidxNestSelectedLayers() {
     } catch (err) {
         app.endUndoGroup();
         return '{"ok":false,"error":"' + spidxEscape(err.toString()) + '"}';
+    }
+}
+
+/* ---------------------------------------------------------------------- *
+ *  Render video -> After Effects' own render queue -> incoming
+ *
+ *  The user picks any OUTPUT MODULE template (the ones in AE's Render Queue:
+ *  "H.264 - Match Render Settings", "ProRes 422", their own...). The comp is
+ *  rendered by AE itself (Adobe Media Encoder is not needed), into a private
+ *  temp folder, then handed to the helper as a finished file.
+ * ---------------------------------------------------------------------- */
+
+function spidxAnyComp() {
+    var comp = spidxActiveComp();
+    if (comp) return comp;
+    if (app.project) {
+        for (var i = 1; i <= app.project.numItems; i++) {
+            if (app.project.item(i) instanceof CompItem) return app.project.item(i);
+        }
+    }
+    return null;
+}
+
+function spidxNativePath(p) {
+    var t = String(p);
+    return (Folder.fs === "Windows") ? t.replace(/\//g, "\\") : t;
+}
+
+function spidxSafeFileBase(text) {
+    var t = String(text || "").replace(/[\\\/:*?"<>|\r\n\t]/g, "_").replace(/^\s+|\s+$/g, "").replace(/\.+$/g, "");
+    if (t.length > 60) t = t.substring(0, 60);
+    return t.length ? t : "render";
+}
+
+// Output module templates AE knows (built-in + the user's own). Hidden "_HIDDEN ..." ones are skipped.
+// AE only exposes the list through an output module, which needs a render-queue item, which needs a
+// comp. With a comp in the project we borrow it; with none (empty project, or the panel opened
+// before the project) we make a 1-frame throwaway comp and delete it again - so the list is never
+// empty just because nothing is open yet.
+function spidxListRenderTemplates() {
+    var item = null;
+    var tmp = null;
+    try {
+        if (!app.project) return spidxFail("No project is open.");
+        var comp = spidxAnyComp();
+        if (!comp) {
+            tmp = app.project.items.addComp("__spidx_tmp", 16, 16, 1, 1, 30);
+            comp = tmp;
+        }
+        item = app.project.renderQueue.items.add(comp);
+        var om = item.outputModule(1);
+        var names = om.templates;
+        var json = "";
+        var count = 0;
+        for (var i = 0; i < names.length; i++) {
+            var n = String(names[i]);
+            if (/^_HIDDEN/i.test(n)) continue;
+            if (count) json += ",";
+            json += '{"name":"' + spidxEscape(n) + '"}';
+            count++;
+        }
+        return '{"ok":true,"items":[' + json + ']}';
+    } catch (err) {
+        return spidxFail(err.toString());
+    } finally {
+        try { if (item) item.remove(); } catch (e1) {}
+        try { if (tmp) tmp.remove(); } catch (e2) {}
+    }
+}
+
+// Human wording for the render queue item's status (RQItemStatus is an enum of numbers).
+function spidxRqStatusName(st) {
+    var names = [["QUEUED", "queued"], ["WILL_CONTINUE", "paused (will continue)"], ["NEEDS_OUTPUT", "missing an output file"],
+                 ["UNQUEUED", "not queued"], ["RENDERING", "still rendering"], ["USER_STOPPED", "stopped by the user"],
+                 ["ERR_STOPPED", "stopped by an error"], ["DONE", "done"]];
+    for (var i = 0; i < names.length; i++) {
+        try { if (RQItemStatus[names[i][0]] === st) return names[i][1]; } catch (e) {}
+    }
+    return String(st);
+}
+
+function spidxRenderComp(incomingPath, templateName, rangeMode) {
+    var item = null;
+    var held = [];
+    try {
+        var comp = spidxActiveComp();
+        if (!comp) return spidxFail("No composition is active - click into a composition, then try again.");
+        if (!templateName || !String(templateName).length) return spidxFail("Pick a render template first.");
+
+        var folder = spidxResolveFolder(incomingPath);
+        if (!folder || !folder.exists) return spidxFail("The incoming folder was not found - link it with \"Change incoming folder\".");
+
+        var tmpDir = new Folder(Folder.temp.fsName + "/SpidxRender");
+        if (!tmpDir.exists) tmpDir.create();
+        var startedAt = new Date();
+        // no spaces in the name AE writes: ExtendScript hands file names back URL-encoded ("IGN%20Clean"),
+        // which is why a comp with a space in its name used to look like "no file appeared"
+        var base = spidxSafeFileBase(comp.name).replace(/\s+/g, "_") + "_" + startedAt.getTime();
+
+        var rq = app.project.renderQueue;
+        // Only OUR item may render: park whatever else is queued, restore it afterwards.
+        for (var q = 1; q <= rq.numItems; q++) {
+            var other = rq.item(q);
+            if (other.status === RQItemStatus.QUEUED) { other.render = false; held.push(other); }
+        }
+
+        item = rq.items.add(comp);
+        var om = item.outputModule(1);
+        try { om.applyTemplate(String(templateName)); }
+        catch (eT) { return spidxFail("After Effects does not know the output template \"" + templateName + "\" (" + eT.toString() + ")."); }
+
+        var label = "entire comp";
+        if (rangeMode === "workarea") {
+            item.timeSpanStart = comp.workAreaStart;
+            item.timeSpanDuration = comp.workAreaDuration;
+            label = "work area";
+        } else {
+            item.timeSpanStart = 0;
+            item.timeSpanDuration = comp.duration;
+        }
+
+        // AE puts the right extension on the file by itself; we only give it a name.
+        om.file = new File(spidxNativePath(tmpDir.fsName + "/" + base));
+        item.render = true;
+
+        rq.render();     // blocks until the render is finished
+
+        var done = (item.status === RQItemStatus.DONE);
+        if (!done) {
+            return spidxFail("After Effects did not finish the render of \"" + comp.name + "\" (" + spidxRqStatusName(item.status) + "; output template \"" + templateName + "\"). "
+                + "Open the Render Queue panel in After Effects for the exact reason - a missing font, a codec the template needs or a folder AE may not write to are the usual causes.");
+        }
+
+        var written = null;
+        function plainName(f) { var n = f.name; try { n = decodeURIComponent(n); } catch (eD) {} return n; }
+        var files = tmpDir.getFiles(function (f) { return (f instanceof File) && f.length > 0 && plainName(f).indexOf(base) === 0; });
+        if (files && files.length) written = files[files.length - 1];
+        if (!written) {
+            // fallback: whatever AE wrote into our private folder since the render started
+            var fresh = tmpDir.getFiles(function (f) { return (f instanceof File) && f.length > 0 && f.modified && f.modified.getTime() >= startedAt.getTime() - 2000; });
+            if (fresh && fresh.length) written = fresh[fresh.length - 1];
+        }
+        if (!written) {
+            var seen = [];
+            try {
+                var all = tmpDir.getFiles();
+                for (var k = 0; k < all.length && seen.length < 5; k++) if (all[k] instanceof File) seen.push(plainName(all[k]) + " (" + all[k].length + " B)");
+            } catch (eL) {}
+            var outPlace = "";
+            try { outPlace = om.file ? om.file.fsName : ""; } catch (eO) {}
+            return spidxFail("After Effects reported success but no video was found in " + tmpDir.fsName + ". Template \"" + templateName + "\" wrote to: "
+                + (outPlace || "(unknown)") + ". Files in that folder: " + (seen.length ? seen.join(", ") : "none")
+                + ". Is the template a video format (not 'Photoshop' or an image sequence with no frames in range)?");
+        }
+
+        var outName = decodeURIComponent(written.name);
+        var partDest = new File(folder.fsName + "/" + outName + ".part");
+        try { if (partDest.exists) partDest.remove(); } catch (e0) {}
+        if (!written.copy(partDest.fsName)) return spidxFail("The video was rendered (" + written.fsName + ") but could not be copied into the incoming folder: " + (partDest.error || "unknown error") + ".");
+        if (partDest.length !== written.length) {
+            try { partDest.remove(); } catch (e1) {}
+            return spidxFail("The copy into the incoming folder is incomplete. Check free disk space.");
+        }
+        var moved = false;
+        for (var mv = 0; mv < 10 && !moved; mv++) {
+            if (mv) $.sleep(300);
+            moved = partDest.rename(outName);
+        }
+        if (!moved) return spidxFail("Could not finish the file in the incoming folder. The rendered video is at: " + written.fsName);
+        try { written.remove(); } catch (e2) {}
+
+        return '{"ok":true,"name":"' + spidxEscape(outName) + '","comp":"' + spidxEscape(comp.name) + '","range":"' + label
+            + '","template":"' + spidxEscape(templateName) + '","size":' + partDest.length + '}';
+    } catch (err) {
+        return spidxFail(err.toString());
+    } finally {
+        try { if (item) item.remove(); } catch (e3) {}
+        for (var h = 0; h < held.length; h++) { try { held[h].render = true; } catch (e4) {} }
+    }
+}
+
+/* ---------------------------------------------------------------------- *
+ *  SPT tab - bundled animation presets (presets\spt.json + .ffx files)
+ *  applied to the selected layers, or onto a fresh adjustment layer.
+ * ---------------------------------------------------------------------- */
+
+function spidxListSptPresets(extPath) {
+    try {
+        var manifest = new File(spidxNativePath(String(extPath) + "/presets/spt.json"));
+        if (!manifest.exists) return '{"ok":true,"items":[]}';
+        manifest.encoding = "UTF-8";
+        manifest.open("r");
+        var text = manifest.read();
+        manifest.close();
+        var list = eval("(" + text + ")");
+        var json = "";
+        var count = 0;
+        for (var i = 0; i < list.length; i++) {
+            var f = new File(spidxNativePath(String(extPath) + "/presets/" + list[i].file));
+            if (!f.exists) continue;
+            if (count) json += ",";
+            json += '{"file":"' + spidxEscape(list[i].file) + '","name":"' + spidxEscape(list[i].name || list[i].file) + '"}';
+            count++;
+        }
+        return '{"ok":true,"items":[' + json + ']}';
+    } catch (err) {
+        return spidxFail(err.toString());
+    }
+}
+
+// mode: "layers" (the selected layers) or "adjustment" (a new adjustment layer on top, full comp length)
+function spidxApplySptPreset(extPath, fileName, mode) {
+    var comp = spidxActiveComp();
+    if (!comp) return spidxFail("No composition is active - click into a composition first.");
+    var f = new File(spidxNativePath(String(extPath) + "/presets/" + String(fileName)));
+    if (!f.exists) return spidxFail("The preset file was not found: " + f.fsName);
+
+    app.beginUndoGroup("Spidx: apply preset");
+    try {
+        if (mode === "adjustment") {
+            var layer = comp.layers.addSolid([1, 1, 1], "Spidx Adjustment", comp.width, comp.height, comp.pixelAspect, comp.duration);
+            layer.adjustmentLayer = true;
+            layer.moveToBeginning();
+            layer.applyPreset(f);
+        } else {
+            if (!comp.selectedLayers.length) { app.endUndoGroup(); return spidxFail("Select at least one layer first (or use \"Apply as adjustment layer\")."); }
+            for (var i = 0; i < comp.selectedLayers.length; i++) comp.selectedLayers[i].applyPreset(f);
+        }
+        app.endUndoGroup();
+        return '{"ok":true,"mode":"' + (mode === "adjustment" ? "adjustment" : "layers") + '"}';
+    } catch (err) {
+        app.endUndoGroup();
+        return spidxFail(err.toString());
+    }
+}
+
+/* ---------------------------------------------------------------------- *
+ *  SPT text templates - compositions inside a bundled .aep (templates\templates.json)
+ * ---------------------------------------------------------------------- */
+
+function spidxListSptTemplates(extPath) {
+    try {
+        var manifest = new File(spidxNativePath(String(extPath) + "/templates/templates.json"));
+        if (!manifest.exists) return '{"ok":true,"items":[]}';
+        manifest.encoding = "UTF-8";
+        manifest.open("r");
+        var text = manifest.read();
+        manifest.close();
+        var list = eval("(" + text + ")");
+        var json = "";
+        var count = 0;
+        for (var i = 0; i < list.length; i++) {
+            var f = new File(spidxNativePath(String(extPath) + "/templates/" + list[i].file));
+            if (!f.exists) continue;
+            if (count) json += ",";
+            json += '{"id":' + i + ',"name":"' + spidxEscape(list[i].name || list[i].comp) + '"}';
+            count++;
+        }
+        return '{"ok":true,"items":[' + json + ']}';
+    } catch (err) {
+        return spidxFail(err.toString());
+    }
+}
+
+function spidxFindCompIn(folder, name) {
+    for (var i = 1; i <= folder.numItems; i++) {
+        var it = folder.item(i);
+        if (it instanceof CompItem && it.name === name) return it;
+        if (it instanceof FolderItem) {
+            var hit = spidxFindCompIn(it, name);
+            if (hit) return hit;
+        }
+    }
+    return null;
+}
+
+function spidxInsertSptTemplate(extPath, templateId, nickText) {
+    var undoOpen = false;
+    try {
+        var comp = spidxActiveComp();
+        if (!comp) return spidxFail("No composition is active - click into a composition first.");
+
+        var manifest = new File(spidxNativePath(String(extPath) + "/templates/templates.json"));
+        if (!manifest.exists) return spidxFail("No templates found. They download automatically for accounts that have the Thumbnail Pack (Dashboard > Templates).");
+        manifest.encoding = "UTF-8";
+        manifest.open("r");
+        var list = eval("(" + manifest.read() + ")");
+        manifest.close();
+        var entry = list[Number(templateId)];
+        if (!entry) return spidxFail("That template does not exist any more - refresh the list.");
+
+        var aep = new File(spidxNativePath(String(extPath) + "/templates/" + entry.file));
+        if (!aep.exists) return spidxFail("The template file was not found: " + aep.fsName);
+
+        app.beginUndoGroup("Spidx: insert template");
+        undoOpen = true;
+
+        // import the .aep once per project (it comes in as a folder named after the file)
+        var holder = null;
+        for (var i = 1; i <= app.project.numItems; i++) {
+            var it = app.project.item(i);
+            if (it instanceof FolderItem && it.name === aep.name) { holder = it; break; }
+        }
+        if (!holder) {
+            var io = new ImportOptions(aep);
+            io.importAs = ImportAsType.PROJECT;
+            holder = app.project.importFile(io);
+        }
+
+        var source = spidxFindCompIn(holder, entry.comp);
+        if (!source) return spidxFail("The composition \"" + entry.comp + "\" was not found inside " + aep.name + ".");
+
+        var copy = source.duplicate();
+        copy.name = entry.comp + " - " + (nickText ? String(nickText) : "text");
+
+        if (nickText && String(nickText).length) {
+            var wanted = String(entry.textLayer || "NICK").toLowerCase();
+            var target = null;
+            var firstText = null;
+            for (var l = 1; l <= copy.numLayers; l++) {
+                var ly = copy.layer(l);
+                if (!(ly instanceof TextLayer)) continue;
+                if (!firstText) firstText = ly;
+                if (ly.name.toLowerCase() === wanted) { target = ly; break; }
+            }
+            if (!target) target = firstText;
+            if (target) {
+                var prop = target.property("Source Text");
+                var doc = prop.value;
+                doc.text = String(nickText);
+                prop.setValue(doc);
+            }
+        }
+
+        var layer = comp.layers.add(copy);
+        layer.startTime = comp.time;
+        layer.moveToBeginning();
+
+        app.endUndoGroup();
+        undoOpen = false;
+        return '{"ok":true,"name":"' + spidxEscape(copy.name) + '"}';
+    } catch (err) {
+        if (undoOpen) { try { app.endUndoGroup(); } catch (e) {} }
+        return spidxFail(err.toString());
     }
 }

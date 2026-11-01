@@ -17,7 +17,7 @@ if errorlevel 1 (
     ) else if exist "%LOCALAPPDATA%\Programs\nodejs\node.exe" (
         set "NODE_EXE=%LOCALAPPDATA%\Programs\nodejs\node.exe"
     ) else (
-        rem No Node anywhere yet — this must be a first run before the app
+        rem No Node anywhere yet - this must be a first run before the app
         rem has ever been started normally. Fall back to the full launcher,
         rem which knows how to install Node itself; it can't pick up the
         rem code from here, so at least get the app running and let the

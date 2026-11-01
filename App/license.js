@@ -22,7 +22,7 @@ const RANKED_TIERS = ["dev", "tester", "pro"]; // highest first
 const LICENSE_SECRET = "03c5cc4c6626f50e054cf9a7ea2e1dc9cc0f4d7dbfafeabe9873d8aba03f0c65";
 
 function log(...args) {
-    console.log("[SE][License]", ...args);
+    console.log("[SE3][License]", ...args);
 }
 
 function readLicenseConfig() {
@@ -110,7 +110,7 @@ function getOrCreateDeviceId() {
 // devices can tell which is which in the Dashboard's device list instead
 // of reading raw UUIDs. Defaults to the machine's hostname, generated
 // once and cached with the device ID (a hostname could theoretically
-// change later — that's fine, this is just a label, not an identifier).
+// change later - that's fine, this is just a label, not an identifier).
 function getOrCreateDeviceName() {
     try {
         const raw = JSON.parse(fs.readFileSync(DEVICE_ID_FILE, "utf8"));
@@ -199,6 +199,21 @@ function rsaPayload(email, tier, timestamp, expiresAt) {
     return [email, tier, timestamp, expiresAt == null ? "" : expiresAt].join("|");
 }
 
+// A second RSA signature over the same text PLUS this computer's id ("sig3"). A valid licence file copied to
+// another computer (or shared) fails here: the proof only counts on the machine it was issued to.
+function devicePayload(email, tier, timestamp, expiresAt, deviceId) {
+    return [email, tier, timestamp, expiresAt == null ? "" : expiresAt, deviceId].join("|");
+}
+
+function isValidDeviceSignature(publicKey, email, tier, timestamp, expiresAt, deviceId, sig3) {
+    if (!publicKey || !sig3 || !timestamp || !deviceId) return false;
+    try {
+        return crypto.verify("RSA-SHA256", Buffer.from(devicePayload(email, tier, timestamp, expiresAt, deviceId)), publicKey, Buffer.from(String(sig3), "base64"));
+    } catch {
+        return false;
+    }
+}
+
 function isValidRsaSignature(publicKey, email, tier, timestamp, expiresAt, sig2) {
     if (!publicKey || !sig2 || !timestamp) return false;
     try {
@@ -214,12 +229,90 @@ function verifyLicense(entry) {
     const publicKey = readPublicKey();
     if (publicKey) {
         // RSA required: a legacy-only or forged response is refused.
-        if (!isValidRsaSignature(publicKey, entry.email, entry.tier, entry.timestamp, entry.expiresAt, entry.sig2)) return { ok: false, method: "rsa" };
-        if (entry.expiresAt && Date.now() > Number(entry.expiresAt)) return { ok: false, method: "rsa", expired: true };
+        if (!entry.sig2) return { ok: false, method: "rsa", reason: "the server sent no RSA signature (is LICENSE_PRIVATE_KEY set on the server?)" };
+        if (!isValidRsaSignature(publicKey, entry.email, entry.tier, entry.timestamp, entry.expiresAt, entry.sig2)) return { ok: false, method: "rsa", reason: "the RSA signature does not match the public key in this app (a different key pair on the server?)" };
+        // bound to THIS computer: a licence file copied from somewhere else does not verify
+        if (!entry.sig3) return { ok: false, method: "rsa", wrongDevice: true, reason: "the server sent no computer-bound signature (an old Code.gs?)" };
+        if (!isValidDeviceSignature(publicKey, entry.email, entry.tier, entry.timestamp, entry.expiresAt, entry.deviceId || getOrCreateDeviceId(), entry.sig3)) return { ok: false, method: "rsa", wrongDevice: true, reason: "the licence is not bound to this computer" };
+        if (entry.expiresAt && Date.now() > Number(entry.expiresAt)) return { ok: false, method: "rsa", expired: true, reason: "the proof has expired" };
         return { ok: true, method: "rsa" };
     }
     // no public key installed yet -> legacy HMAC (transition)
-    return { ok: isValidSignature(entry.email, entry.tier, entry.timestamp, entry.signature), method: "legacy" };
+    if (!entry.signature) return { ok: false, method: "legacy", reason: "the server sent no legacy signature (the HMAC_SECRET property is missing on the server)" };
+    return isValidSignature(entry.email, entry.tier, entry.timestamp, entry.signature)
+        ? { ok: true, method: "legacy" }
+        : { ok: false, method: "legacy", reason: "the legacy signature does not match LICENSE_SECRET (HMAC_SECRET on the server is not the same value as in this app)" };
+}
+
+/* ---------------------------------------------------------------------- *
+ *  Render allowance answers (free plan: 15 video renders per month)
+ *
+ *  The server counts the renders and signs its answer. The signed text is
+ *      render|email|deviceId|month|key|allowed(1/0)|used|limit|timestamp
+ *  (limit empty = unlimited), RSA like the licence itself, or legacy HMAC
+ *  while no public key is installed. The email is NOT taken from the answer:
+ *  it is the signed-in Google account, so an answer for somebody else fails.
+ * ---------------------------------------------------------------------- */
+const RENDER_ANSWER_MAX_AGE_MS = 10 * 60 * 1000;
+
+function renderPayload(email, deviceId, month, key, allowed, used, limit, timestamp) {
+    return ["render", email, deviceId, month, key, allowed ? 1 : 0, used, limit == null ? "" : limit, timestamp].join("|");
+}
+
+// -> { ok, reason? }
+function verifyRenderAnswer(answer, expected) {
+    try {
+        if (!answer || answer.ok !== true) return { ok: false, reason: "not ok" };
+        const ts = Number(answer.timestamp);
+        if (!Number.isFinite(ts) || Math.abs(Date.now() - ts) > RENDER_ANSWER_MAX_AGE_MS) return { ok: false, reason: "stale answer" };
+        if (String(answer.key || "") !== String(expected.key || "")) return { ok: false, reason: "wrong key" };
+        const allowed = answer.allowed === true;
+        const payload = renderPayload(expected.email, expected.deviceId, answer.month, expected.key || "", allowed, answer.used, answer.limit, ts);
+        const publicKey = readPublicKey();
+        if (publicKey) {
+            const good = answer.sig2 && crypto.verify("RSA-SHA256", Buffer.from(payload), publicKey, Buffer.from(String(answer.sig2), "base64"));
+            return good ? { ok: true } : { ok: false, reason: "bad rsa signature" };
+        }
+        // no public key installed yet -> legacy HMAC (transition, same as the licence)
+        const expectedHmac = crypto.createHmac("sha256", LICENSE_SECRET).update(payload).digest();
+        const actual = Buffer.from(String(answer.signature || ""), "hex");
+        return expectedHmac.length === actual.length && crypto.timingSafeEqual(expectedHmac, actual) ? { ok: true } : { ok: false, reason: "bad signature" };
+    } catch (err) {
+        return { ok: false, reason: err.message };
+    }
+}
+
+/* ---------------------------------------------------------------------- *
+ *  Thumbnail Pack manifest (templates / presets / MOGRT delivered by the server)
+ *  Signed text:  pack|email|deviceId|entitled(1/0)|version|sha256(itemsJson)|timestamp
+ * ---------------------------------------------------------------------- */
+function packPayload(email, deviceId, entitled, version, itemsJson, timestamp) {
+    const digest = crypto.createHash("sha256").update(String(itemsJson), "utf8").digest("hex");
+    return ["pack", email, deviceId, entitled ? 1 : 0, version, digest, timestamp].join("|");
+}
+
+// -> { ok, reason?, entitled?, items? }
+function verifyPackManifest(answer, expected) {
+    try {
+        if (!answer || answer.ok !== true) return { ok: false, reason: "not ok" };
+        const ts = Number(answer.timestamp);
+        if (!Number.isFinite(ts) || Math.abs(Date.now() - ts) > RENDER_ANSWER_MAX_AGE_MS) return { ok: false, reason: "stale answer" };
+        const entitled = answer.entitled === true;
+        const payload = packPayload(expected.email, expected.deviceId, entitled, answer.version, answer.itemsJson, ts);
+        const publicKey = readPublicKey();
+        let good;
+        if (publicKey) {
+            good = !!answer.sig2 && crypto.verify("RSA-SHA256", Buffer.from(payload), publicKey, Buffer.from(String(answer.sig2), "base64"));
+        } else {
+            const expectedHmac = crypto.createHmac("sha256", LICENSE_SECRET).update(payload).digest();
+            const actual = Buffer.from(String(answer.signature || ""), "hex");
+            good = expectedHmac.length === actual.length && crypto.timingSafeEqual(expectedHmac, actual);
+        }
+        if (!good) return { ok: false, reason: "bad signature" };
+        return { ok: true, entitled, version: Number(answer.version) || 0, items: JSON.parse(String(answer.itemsJson || "[]")) };
+    } catch (err) {
+        return { ok: false, reason: err.message };
+    }
 }
 
 function isValidSignature(email, tier, timestamp, signature) {
@@ -266,10 +359,10 @@ function fetchTier(checkUrl, idToken, deviceId, deviceName) {
             throw new Error(`Unexpected response from the tier check endpoint: ${error.message}`);
         }
 
-        if (parsed.error) throw new Error(`Tier check rejected: ${parsed.error}${parsed.message ? ` — ${parsed.message}` : ""}`);
+        if (parsed.error) throw new Error(`Tier check rejected: ${parsed.error}${parsed.message ? ` - ${parsed.message}` : ""}`);
 
         // Apps Script derives this from the VERIFIED token, not from
-        // anything the client claimed — see the comment on checkTier()
+        // anything the client claimed - see the comment on checkTier()
         // below for why that distinction matters.
         const verifiedEmail = String(parsed.email || "").trim().toLowerCase();
         if (!verifiedEmail) throw new Error("Tier check response did not include a verified email.");
@@ -278,16 +371,16 @@ function fetchTier(checkUrl, idToken, deviceId, deviceName) {
 
         const verdict = verifyLicense({
             email: verifiedEmail, tier: signedTier, timestamp: parsed.timestamp,
-            signature: parsed.signature, sig2: parsed.sig2, expiresAt: parsed.expiresAt
+            signature: parsed.signature, sig2: parsed.sig2, sig3: parsed.sig3, expiresAt: parsed.expiresAt, deviceId
         });
         if (!verdict.ok) {
-            throw new Error(verdict.expired ? "License response has already expired." : "Tier response failed signature verification.");
+            throw new Error(verdict.expired ? "License response has already expired." : `Tier response failed signature verification - ${verdict.reason || "unknown reason"}.`);
         }
         const roles = parseRoles(signedTier);
         const tier = primaryTier(roles);
 
         // trialDaysRemaining is informational only (like deviceLimitReached)
-        // — it doesn't gate anything itself. The tier value Apps Script
+        // - it doesn't gate anything itself. The tier value Apps Script
         // returns already reflects expiry (falls back to "free" past the
         // trial end date), so this is purely for the panel's countdown
         // display and isn't part of the signed payload.
@@ -302,6 +395,7 @@ function fetchTier(checkUrl, idToken, deviceId, deviceName) {
             signedTier,
             signatureMethod: verdict.method,
             sig2: parsed.sig2 || null,
+            sig3: parsed.sig3 || null,
             expiresAt: parsed.expiresAt || null,
             timestamp: parsed.timestamp,
             signature: parsed.signature,
@@ -312,13 +406,13 @@ function fetchTier(checkUrl, idToken, deviceId, deviceName) {
 }
 
 // Takes a Google ID token (a signed JWT proving who's actually signed
-// in — see google-auth.js's getIdToken()), NOT a bare email string. The
+// in - see google-auth.js's getIdToken()), NOT a bare email string. The
 // old version sent "?email=someone@gmail.com" as a plain query param,
-// which Apps Script had no way to verify belonged to the caller —
+// which Apps Script had no way to verify belonged to the caller -
 // anyone could request anyone else's tier just by guessing their email,
 // no login required. Apps Script now verifies the token itself (via
 // Google's tokeninfo endpoint) and returns the email IT extracted from
-// the verified token, which is what gets signature-checked below —
+// the verified token, which is what gets signature-checked below -
 // the client's own notion of "whose tier is this" no longer matters,
 // only what Google's servers actually vouch for.
 async function checkTier(idToken, cacheKeyEmail) {
@@ -329,21 +423,21 @@ async function checkTier(idToken, cacheKeyEmail) {
     const cacheMatchesEmail = cache && cacheKeyEmail && cache.email === cacheKeyEmail;
     const cacheSignatureValid = cacheMatchesEmail && verifyLicense({
         email: cache.email, tier: cache.tier, timestamp: cache.timestamp,
-        signature: cache.signature, sig2: cache.sig2, expiresAt: cache.expiresAt
+        signature: cache.signature, sig2: cache.sig2, sig3: cache.sig3, expiresAt: cache.expiresAt, deviceId
     }).ok;   // an expired RSA licence in the cache counts as invalid too
 
     if (cacheMatchesEmail && !cacheSignatureValid) {
-        log("Local tier cache failed signature verification — ignoring it.");
+        log("Local tier cache failed signature verification - ignoring it.");
     }
 
-    // Always try the network first — this runs once per helper start (i.e.
+    // Always try the network first - this runs once per helper start (i.e.
     // once per "app open"), so it's cheap, and it means the tier shown is
     // never more than one restart stale. CACHE_TTL_MS below only decides
     // how long a cached result stays trustworthy as a FALLBACK when the
-    // network call itself fails (offline, Apps Script down, etc.) — it no
+    // network call itself fails (offline, Apps Script down, etc.) - it no
     // longer skips the network call on its own.
     if (!checkUrl) {
-        log('No "license.checkUrl" set in helper-config.json — defaulting to free.');
+        log('No "license.checkUrl" set in helper-config.json - defaulting to free.');
         return { tier: DEFAULT_TIER, roles: [DEFAULT_TIER], deviceLimitReached: false, trialDaysRemaining: null };
     }
 
@@ -357,6 +451,7 @@ async function checkTier(idToken, cacheKeyEmail) {
             timestamp: result.timestamp,
             signature: result.signature,
             sig2: result.sig2,
+            sig3: result.sig3,
             expiresAt: result.expiresAt,
             checkedAt: Date.now()
         });
@@ -368,9 +463,9 @@ async function checkTier(idToken, cacheKeyEmail) {
         const fallback = cacheIsWithinFallbackWindow
             ? { tier: primaryTier(cachedRoles), roles: cachedRoles, deviceLimitReached: !!cache.deviceLimitReached, trialDaysRemaining: cache.trialDaysRemaining || null }
             : { tier: DEFAULT_TIER, roles: [DEFAULT_TIER], deviceLimitReached: false, trialDaysRemaining: null };
-        log(`Could not check tier (${error.message}) — using ${fallback.roles.join("+")}.`);
+        log(`Could not check tier (${error.message}) - using ${fallback.roles.join("+")}.`);
         return fallback;
     }
 }
 
-module.exports = { checkTier, getOrCreateDeviceId, DEFAULT_TIER, KNOWN_TIERS, parseRoles, primaryTier, verifyLicense };
+module.exports = { checkTier, getOrCreateDeviceId, DEFAULT_TIER, KNOWN_TIERS, parseRoles, primaryTier, verifyLicense, verifyRenderAnswer, renderPayload, verifyPackManifest, packPayload };

@@ -1,18 +1,18 @@
 /* ========================================================================
- *  Spidx Uploader — Photoshop bridge job
+ *  Spidx Uploader - Photoshop bridge job
  *
  *  Run inside an already-running Photoshop via DoJavaScriptFile (see
  *  App/photoshop-bridge.vbs / App/photoshop-bridge.js). Not a panel
- *  script — this is a one-shot job.
+ *  script - this is a one-shot job.
  *
  *  Behavior: the frame After Effects saved is dropped in as a NEW LAYER
  *  at the bottom of whatever document is currently active in Photoshop
- *  (e.g. a particles/overlay template already open and set up) — it no
+ *  (e.g. a particles/overlay template already open and set up) - it no
  *  longer opens a separate new document per frame. The Camera Raw Action
  *  runs on just that new layer, then a flattened, throwaway duplicate of
  *  the whole document (particles + frame, composited) is what actually
  *  gets saved as the JPG and uploaded. The real open document is never
- *  flattened or saved — only a disposable copy of it is.
+ *  flattened or saved - only a disposable copy of it is.
  *
  *  Arguments (via DoJavaScriptFile's Arguments array):
  *    arguments[0]  input PNG path (from After Effects)
@@ -20,7 +20,7 @@
  *    arguments[2]  Action name
  *    arguments[3]  output JPG path to write the result to
  *
- *  Returns a JSON string — this is the script's own return value, which
+ *  Returns a JSON string - this is the script's own return value, which
  *  DoJavaScriptFile hands back to the .vbs caller and Node reads off
  *  stdout. Failures come back as data instead of a thrown COM error, so
  *  server.js can fall back to uploading the raw frame cleanly.
@@ -40,9 +40,9 @@ function spidxEscape(value) {
 }
 
 // The top-level `arguments` here is what DoJavaScriptFile actually fills
-// in (Photoshop's own mechanism for passing args into a loaded script —
+// in (Photoshop's own mechanism for passing args into a loaded script -
 // not a function parameter list). It has to be captured up here, at
-// top-level scope, and handed into the IIFE below explicitly — inside a
+// top-level scope, and handed into the IIFE below explicitly - inside a
 // `(function () {...})()` with no declared parameters, `arguments`
 // would refer to *that* function's own empty argument list instead,
 // which is exactly the bug that produced "Input file does not exist:
@@ -65,7 +65,7 @@ var spidxOutputPath = arguments[3];
         }
 
         if (app.documents.length === 0) {
-            return '{"ok":false,"error":"No document is open in Photoshop \\u2014 open your particles/template project first, then try again."}';
+            return '{"ok":false,"error":"No document is open in Photoshop - open your particles/template project first, then try again."}';
         }
         targetDoc = app.activeDocument;
 
@@ -83,16 +83,16 @@ var spidxOutputPath = arguments[3];
         try {
             app.doAction(actionName, actionSet);
         } catch (actionErr) {
-            // Leave the document the way it was before this run — a
+            // Leave the document the way it was before this run - a
             // half-processed leftover layer would be worse than none.
             try { newLayer.remove(); } catch (eRemove) {}
             return '{"ok":false,"error":"Action \\"' + spidxEscape(actionName) + '\\" (set \\"' + spidxEscape(actionSet)
-                + '\\") failed or was not found \\u2014 check the names match the Actions panel exactly. '
+                + '\\") failed or was not found - check the names match the Actions panel exactly. '
                 + spidxEscape(actionErr.toString()) + '"}';
         }
 
         // Export the composited result (particles + new frame) without
-        // touching the real, still-open document — duplicate-and-merge
+        // touching the real, still-open document - duplicate-and-merge
         // makes a disposable flattened copy, save that, throw it away.
         flatDup = targetDoc.duplicate(undefined, true);
         var outFile = new File(outputPath);

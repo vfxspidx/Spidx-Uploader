@@ -1,4 +1,5 @@
 "use strict";
+const i18n = require("./i18n.js");
 
 /* ========================================================================
  *  Client presets - one choice sets several things at once.
@@ -105,7 +106,7 @@ function matchesConfig(preset, config) {
 // short human-readable lines for the UI
 function describePreset(preset) {
     const parts = [preset.destination === "drive" ? "Google Drive" + (preset.driveFolder ? " \u2192 " + preset.driveFolder : "") : "WorkUpload"];
-    parts.push(preset.compression.enabled ? "compress to " + preset.compression.targetMB + " MB" : "no compression");
+    parts.push(preset.compression.enabled ? i18n.t("compress to {mb} MB", { mb: preset.compression.targetMB }) : i18n.t("no compression"));
     if (preset.cameraRawPreset) parts.push("Camera Raw: " + preset.cameraRawPreset.actionName);
     return parts;
 }

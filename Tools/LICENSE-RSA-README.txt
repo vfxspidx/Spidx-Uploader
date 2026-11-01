@@ -45,3 +45,23 @@ has; the app holds only the PUBLIC key, which can verify but never sign.
 
 Rolling back: delete App\license-public-key.pem and the app accepts the legacy
 signature again.
+
+
+Complete licence server (3.0)
+=============================
+Tools\licence-server-Code.gs is the WHOLE Apps Script (it replaces Code.gs) and contains no secret:
+  - RSA signature (sig2) AND a second RSA signature bound to the computer (sig3), valid 14 days offline
+  - the free plan's monthly video renders, counted on the server (account AND computer)
+  - the admin / shop actions (codes, refund, restore, bulk)
+Script properties it reads:  ADMIN_KEY, LICENSE_PRIVATE_KEY, HMAC_SECRET (temporary, same value as LICENSE_SECRET in
+App\license.js; delete it once every user has the app that ships the public key).
+ORDER:  1) generate keys  2) set the properties  3) paste Code.gs and deploy a new version  4) copy
+Tools\keys\license-public-key.pem to App\license-public-key.pem and ship the app. Never the other way round:
+an app that has the public key REQUIRES sig2 and sig3 and treats everybody as free until the server sends them.
+
+Checking that the server and the app agree
+==========================================
+Server: in Apps Script run diagnoseKeys (function dropdown > Run), then View > Logs. It prints no secret.
+App (the fingerprint of LICENSE_SECRET, to compare with the server's HMAC_SECRET fingerprint):
+  node -e "const s=require('fs').readFileSync('App/license.js','utf8').match(/LICENSE_SECRET = \"(.*?)\"/)[1];console.log(require('crypto').createHash('sha256').update(s).digest('hex').slice(0,8))"
+In App\helper.log the check now says WHY it failed, e.g. "(the HMAC_SECRET property is missing on the server)".

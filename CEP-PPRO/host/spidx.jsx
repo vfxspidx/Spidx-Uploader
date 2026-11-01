@@ -1,15 +1,15 @@
 /* ========================================================================
- *  Spidx Uploader — Premiere Pro host layer (ExtendScript)
+ *  Spidx Uploader - Premiere Pro host layer (ExtendScript)
  *
  *  Port of the After Effects host script (CEP-AE/host/spidx.jsx). Both
  *  panels talk to the SAME Spider Engine the same way: by dropping files
  *  into App\incoming and reading/writing the small dot-files in it. No
- *  network, no IPC, no second engine — server.js does not know or care
+ *  network, no IPC, no second engine - server.js does not know or care
  *  which host application produced the PNG.
  *
  *  The one thing that had to change completely is the export itself.
  *  After Effects has CompItem.saveFrameToPng(), a single scripting call
- *  that grabs one frame. Premiere Pro's DOM has nothing like that —
+ *  that grabs one frame. Premiere Pro's DOM has nothing like that -
  *  Sequence has no "export current frame" method. The documented way to
  *  get a single frame out of a sequence via scripting is:
  *
@@ -25,10 +25,10 @@
  *  It has to be generated once from Premiere's own Export Media dialog
  *  and dropped next to this script (see spidxPresetPath() below and the
  *  install notes in ../PRESET-SETUP.txt). Everything downstream of that
- *  — staging file, rename-on-completion, retry-on-lock — is identical to
+ *  - staging file, rename-on-completion, retry-on-lock - is identical to
  *  the AE version.
  *
- *  Every function here returns a JSON *string* — CEP's evalScript can
+ *  Every function here returns a JSON *string* - CEP's evalScript can
  *  only hand back strings, and ExtendScript has no JSON object.
  * ==================================================================== */
 
@@ -102,7 +102,7 @@ function spidxStamp() {
 }
 
 // Used to require copying the .epr into two places (Media Encoder's own
-// Presets folder AND this extension's presets/ folder) — now it's just
+// Presets folder AND this extension's presets/ folder) - now it's just
 // wherever Premiere's "Save Preset..." already put it. The extension's
 // own presets/ folder is still checked first so installs set up under
 // the old two-copy instructions keep working with no extra step.
@@ -125,11 +125,11 @@ function spidxPresetPath() {
         }
     }
 
-    return bundled; // still missing everywhere — caller reports exactly this path as "not found"
+    return bundled; // still missing everywhere - caller reports exactly this path as "not found"
 }
 
 /* ---------------------------------------------------------------------- *
- *  Motion Graphics Templates — the panel's "MOGRT" tab
+ *  Motion Graphics Templates - the panel's "MOGRT" tab
  * ---------------------------------------------------------------------- */
 
 // Where this panel lives on disk. Computed ONCE here, at load time, when
@@ -239,7 +239,7 @@ function spidxInsertMogrt(fileName, nick, allowText, extPath, textParam) {
         var name = spidxSafeMogrtName(fileName);
         if (!name) return spidxFail("Invalid template name: " + fileName);
         var source = spidxBundledMogrt(name, extPath);
-        if (!source.exists) return spidxFail("Bundled file not found: " + source.fsName + " - reinstall the Premiere Pro panel (an older Windows installer skipped the mogrts folder).");
+        if (!source.exists) return spidxFail("The template file is not in the Thumbnail Pack folder yet (" + source.fsName + "). Open the Dashboard > Templates and press Sync now.");
 
         var pos = seq.getPlayerPosition();
         var trackIndex = spidxFreeVideoTrackIndex(seq, Number(pos.seconds));
@@ -282,7 +282,7 @@ function spidxInsertMogrt(fileName, nick, allowText, extPath, textParam) {
 }
 
 /* ---------------------------------------------------------------------- *
- *  Context — what the panel shows before you click anything
+ *  Context - what the panel shows before you click anything
  * ---------------------------------------------------------------------- */
 function spidxContext() {
     try {
@@ -335,10 +335,10 @@ function spidxSaveFrame(incomingPath, viaPhotoshop, presetOverride) {
 
     try {
         var seq = spidxActiveSequence();
-        if (!seq) return spidxFail("No sequence is active — open a sequence in the Timeline panel, then try again.");
+        if (!seq) return spidxFail("No sequence is active - open a sequence in the Timeline panel, then try again.");
 
         // A manually-picked path (the panel's "Change preset (.epr)"
-        // link) always wins over auto-detection — that's the whole
+        // link) always wins over auto-detection - that's the whole
         // point of letting the user point at it themselves.
         var preset = (presetOverride && String(presetOverride).length) ? new File(presetOverride) : spidxPresetPath();
         if (!preset.exists) {
@@ -346,7 +346,7 @@ function spidxSaveFrame(incomingPath, viaPhotoshop, presetOverride) {
                 "PNG export preset not found at " + preset.fsName + ". " +
                 "Run Premiere's Export Media dialog once, set Format to PNG, click " +
                 "\"Save Preset...\", name it pngframe.epr and save it into the panel's " +
-                "presets folder — see PRESET-SETUP.txt. This is a one-time setup step."
+                "presets folder - see PRESET-SETUP.txt. This is a one-time setup step."
             );
         }
 
@@ -360,13 +360,13 @@ function spidxSaveFrame(incomingPath, viaPhotoshop, presetOverride) {
         savedOut = seq.getOutPoint();
 
         var pos = seq.getPlayerPosition();
-        // in == out is NOT a reliable "one frame" work area — Adobe's own
+        // in == out is NOT a reliable "one frame" work area - Adobe's own
         // official PProPanel sample deliberately avoids it too (see
         // exportCurrentFrameAsPNG() in Adobe-CEP/Samples), because a
         // zero-length range is ambiguous to the export engine. This is
         // the most likely cause of two things reported together: the
         // wrong/stale frame coming out, and the export taking far longer
-        // than one frame should — a work area Premiere can't pin down to
+        // than one frame should - a work area Premiere can't pin down to
         // exactly one frame can fall back to re-rendering a much bigger
         // range instead of just grabbing the current frame.
         var fps = spidxSequenceFps(seq);
@@ -378,8 +378,8 @@ function spidxSaveFrame(incomingPath, viaPhotoshop, presetOverride) {
         partFile = new File(wantedPath);
 
         // exportAsMediaDirect returns before the file is necessarily
-        // finished writing — it queues the export and returns
-        // immediately — so this polls for it exactly like the AE side
+        // finished writing - it queues the export and returns
+        // immediately - so this polls for it exactly like the AE side
         // polls for saveFrameToPng's bytes to flush.
         var queued = seq.exportAsMediaDirect(partFile.fsName, preset.fsName, app.encoder.ENCODE_IN_TO_OUT);
         if (!queued) {
@@ -419,14 +419,14 @@ function spidxSaveFrame(incomingPath, viaPhotoshop, presetOverride) {
 
         if (!found) {
             return spidxFail("Premiere Pro did not write the frame to: " + partFile.fsName
-                + " (folder exists: " + folder.exists + ") — exports can take longer on a slow disk; try Upload again. "
+                + " (folder exists: " + folder.exists + ") - exports can take longer on a slow disk; try Upload again. "
                 + "If this keeps happening, re-check pngframe.epr in PRESET-SETUP.txt: it must be a plain PNG preset "
                 + "with \"Export As Sequence\" UNCHECKED.");
         }
         partFile = found;
         if (partFile.length === 0) {
             try { partFile.remove(); } catch (e) {}
-            return spidxFail("Premiere Pro wrote an empty frame — check that pngframe.epr still points at a PNG format.");
+            return spidxFail("Premiere Pro wrote an empty frame - check that pngframe.epr still points at a PNG format.");
         }
 
         var finalFile = new File(folder.fsName + "/" + baseName + suffix);
@@ -440,7 +440,7 @@ function spidxSaveFrame(incomingPath, viaPhotoshop, presetOverride) {
         }
         if (!renamed) {
             return spidxFail("Could not rename the finished frame to " + baseName + suffix
-                + " (another process — often antivirus real-time scanning — may still have it locked; try Upload again).");
+                + " (another process - often antivirus real-time scanning - may still have it locked; try Upload again).");
         }
 
         return '{"ok":true,"name":"' + spidxEscape(baseName + suffix) + '","size":' + size
@@ -461,27 +461,271 @@ function spidxSaveFrame(incomingPath, viaPhotoshop, presetOverride) {
     }
 }
 
+/* ---------------------------------------------------------------------- *
+ *  Render video -> Media Encoder -> incoming
+ *
+ *  The user picks ANY export preset (.epr) - the format, bitrate and size
+ *  are entirely that preset's business. Premiere Pro exports the sequence
+ *  itself (Sequence.exportAsMediaDirect - Adobe Media Encoder is NOT needed;
+ *  it is only a fallback) with the output path pointing into the helper's
+ *  incoming folder. The helper uploads the file by itself once it is
+ *  finished - it checks that the MP4 / MOV is complete before touching it,
+ *  so no polling happens here.
+ * ---------------------------------------------------------------------- */
+
+function spidxPushPresetsFrom(folder, group, out, depth, state) {
+    if (!folder || !folder.exists || depth > 3 || state.count >= 400) return;
+    var entries;
+    try { entries = folder.getFiles(); } catch (e) { return; }
+    for (var i = 0; i < entries.length && state.count < 400; i++) {
+        var f = entries[i];
+        if (f instanceof Folder) {
+            spidxPushPresetsFrom(f, group, out, depth + 1, state);
+        } else if (/\.epr$/i.test(f.name)) {
+            var label = decodeURIComponent(f.name).replace(/\.epr$/i, "");
+            if (/^pngframe$/i.test(label)) continue;           // this panel's own still-frame preset
+            var key = group + "|" + label.toLowerCase();
+            if (state.seen[key]) continue;
+            state.seen[key] = true;
+            out.push({ name: label, path: f.fsName, group: group });
+            state.count++;
+        }
+    }
+    if (state.count >= 400) state.capped = true;
+}
+
+function spidxListRenderPresets() {
+    try {
+        var out = [];
+        var state = { count: 0, seen: {}, capped: false };
+
+        // 1. presets the user saved (Premiere's Export dialog keeps them next to Media Encoder's, per version)
+        var root = new Folder("~/AppData/Roaming/Adobe/Adobe Media Encoder");
+        if (root.exists) {
+            var versionFolders = root.getFiles(function (f) { return f instanceof Folder; });
+            spidxSortVersionFoldersDesc(versionFolders);
+            for (var v = 0; v < versionFolders.length; v++) {
+                spidxPushPresetsFrom(new Folder(versionFolders[v].fsName + "/Presets"), "My presets", out, 0, state);
+            }
+        }
+
+        var docsRoot = new Folder("~/Documents/Adobe/Adobe Media Encoder");
+        if (docsRoot.exists) {
+            var docVersions = docsRoot.getFiles(function (f) { return f instanceof Folder; });
+            spidxSortVersionFoldersDesc(docVersions);
+            for (var d = 0; d < docVersions.length; d++) {
+                spidxPushPresetsFrom(new Folder(docVersions[d].fsName + "/Presets"), "My presets", out, 0, state);
+            }
+        }
+
+        // 2. the presets that ship with Media Encoder / Premiere Pro
+        var adobe = new Folder("C:/Program Files/Adobe");
+        if (adobe.exists) {
+            var apps = adobe.getFiles(function (f) {
+                return (f instanceof Folder) && /^Adobe (Media Encoder|Premiere Pro)/i.test(decodeURIComponent(f.name));
+            });
+            spidxSortVersionFoldersDesc(apps);
+            for (var a = 0; a < apps.length; a++) {
+                spidxPushPresetsFrom(new Folder(apps[a].fsName + "/MediaIO/systempresets"), "Built-in", out, 0, state);
+            }
+        }
+
+        var json = "";
+        for (var k = 0; k < out.length; k++) {
+            if (k) json += ",";
+            json += '{"name":"' + spidxEscape(out[k].name) + '","path":"' + spidxEscape(out[k].path) + '","group":"' + spidxEscape(out[k].group) + '"}';
+        }
+        return '{"ok":true,"capped":' + (state.capped ? "true" : "false") + ',"items":[' + json + ']}';
+    } catch (err) {
+        return spidxFail(err.toString());
+    }
+}
+
+// Characters Windows does not allow in a file name, plus anything odd.
+function spidxSafeFileBase(text) {
+    var t = String(text || "").replace(/[\\\/:*?"<>|\r\n\t]/g, "_").replace(/^\s+|\s+$/g, "").replace(/\.+$/g, "");
+    if (t.length > 60) t = t.substring(0, 60);
+    return t.length ? t : "render";
+}
+
+// Media Encoder decides the real extension from the preset's format; this is only the
+// extension we hand it so that a name is always valid. ProRes / QuickTime family -> .mov.
+function spidxGuessVideoExt(presetName) {
+    return /prores|quicktime|dnx|cineform|animation|\.mov/i.test(String(presetName || "")) ? ".mov" : ".mp4";
+}
+
+function spidxNativePath(p) {
+    var t = String(p);
+    return (Folder.fs === "Windows") ? t.replace(/\//g, "\\") : t;
+}
+
+// True when Adobe Media Encoder is installed (the render fallback is useless without it).
+function spidxHasMediaEncoder() {
+    try {
+        var adobe = new Folder("C:/Program Files/Adobe");
+        if (!adobe.exists) return false;
+        var hits = adobe.getFiles(function (f) { return (f instanceof Folder) && /Media Encoder/i.test(decodeURIComponent(f.name)); });
+        return !!(hits && hits.length);
+    } catch (e) { return false; }
+}
+
+function spidxRenderSequence(incomingPath, presetPath, rangeMode) {
+    try {
+        var seq = spidxActiveSequence();
+        if (!seq) return spidxFail("No sequence is active - open a sequence in the Timeline panel, then try again.");
+
+        if (!presetPath || !String(presetPath).length) return spidxFail("Pick a render preset first.");
+        var preset = new File(presetPath);
+        if (!preset.exists) return spidxFail("The preset file was not found: " + preset.fsName);
+
+        var folder = spidxResolveFolder(incomingPath);
+        if (!folder || !folder.exists) return spidxFail("The incoming folder was not found - link it with \"Change incoming folder\".");
+
+        var range;
+        var label;
+        if (rangeMode === "entire") { range = app.encoder.ENCODE_ENTIRE; label = "entire sequence"; }
+        else if (rangeMode === "workarea") { range = app.encoder.ENCODE_WORKAREA; label = "work area"; }
+        else { range = app.encoder.ENCODE_IN_TO_OUT; label = "in to out"; }
+
+        var presetLabel = decodeURIComponent(preset.name).replace(/\.epr$/i, "");
+        var outName = spidxSafeFileBase(seq.name).replace(/\s+/g, "_") + "_" + (new Date()).getTime() + spidxGuessVideoExt(presetLabel);
+        // Render into a private temp folder (NOT the synced / scanned incoming folder: OneDrive,
+        // antivirus and the helper can lock a file that is being written, and Premiere then stops
+        // with "Unable to delete existing file"). The finished file is moved into incoming below.
+        var tmpDir = new Folder(Folder.temp.fsName + "/SpidxRender");
+        if (!tmpDir.exists) tmpDir.create();
+        var outPath = tmpDir.fsName + "/" + outName;
+
+        // Premiere Pro's OWN export (no Media Encoder needed - most people never open it).
+        // Media Encoder is only a fallback for when the direct export is refused.
+        var jobId = null;
+        var via = "premiere";
+        var firstError = "";
+        var directReturn = "";
+        var outFile = new File(outPath);
+
+        // exportAsMediaDirect is synchronous: when it returns, the file is on disk. Its return
+        // value differs between Premiere builds (job id, "No Error", empty...), so the file
+        // itself is the proof of success - not the return value.
+        // Premiere's exporter is picky about the output path: use ONE kind of separator (all
+        // backslashes on Windows) - a mixed "C:\\dir/file.mp4" is a known cause of
+        // "Unable to delete existing file" - and try again with a fresh name if it still trips.
+        for (var tryNo = 0; tryNo < 3; tryNo++) {
+            var tryName = tryNo === 0 ? outName : outName.replace(/(\.[A-Za-z0-9]+)$/, "_r" + tryNo + "$1");
+            outPath = spidxNativePath(tmpDir.fsName + "/" + tryName);
+            outFile = new File(outPath);
+            firstError = "";
+            directReturn = "";
+            try {
+                var direct = seq.exportAsMediaDirect(outPath, spidxNativePath(preset.fsName), range);
+                directReturn = (direct === undefined || direct === null) ? "" : String(direct);
+            } catch (e1) {
+                firstError = e1.toString();
+            }
+            var failedText = firstError + " " + directReturn;
+            if (outFile.exists && outFile.length > 0) { outName = tryName; break; }
+            try { if (outFile.exists) outFile.remove(); } catch (eRm) {}
+            if (!/unable to delete|permission|error compiling/i.test(failedText)) break;
+            $.sleep(1500);
+        }
+
+        var written = null;
+        if (!firstError) {
+            for (var w = 0; w < 25 && !written; w++) {          // up to ~5 s for the disk to catch up
+                if (outFile.exists && outFile.length > 0) { written = outFile; break; }
+                try {
+                    var wantedBase = spidxSafeFileBase(seq.name).replace(/\s+/g, "_") + "_";
+                    var near = tmpDir.getFiles(function (f) {
+                        if (!(f instanceof File)) return false;
+                        var plain = f.name; try { plain = decodeURIComponent(plain); } catch (eDec) {}   // ExtendScript hands names back URL-encoded
+                        return plain.indexOf(wantedBase) === 0 && /\.(mp4|mov|m4v|mxf|avi|mkv|webm)$/i.test(plain) && f.modified && (new Date()).getTime() - f.modified.getTime() < 600000 && f.length > 0;
+                    });
+                    if (near && near.length) { written = near[near.length - 1]; break; }
+                } catch (e4) {}
+                $.sleep(200);
+            }
+            if (written) {
+                jobId = "direct";
+                outName = decodeURIComponent(written.name);
+
+                // Hand the finished file to the helper: copy under a name it ignores (".part"),
+                // then rename inside the same folder, so it appears complete in one step.
+                var partDest = new File(folder.fsName + "/" + outName + ".part");
+                var finalDest = new File(folder.fsName + "/" + outName);
+                try { if (partDest.exists) partDest.remove(); } catch (e5) {}
+                if (!written.copy(partDest.fsName)) {
+                    return spidxFail("The video was rendered (" + written.fsName + ") but could not be copied into the incoming folder: " + (partDest.error || "unknown error") + ". Check free disk space and that the folder is writable.");
+                }
+                if (partDest.length !== written.length) {
+                    try { partDest.remove(); } catch (e6) {}
+                    return spidxFail("The copy into the incoming folder is incomplete (" + partDest.length + " of " + written.length + " bytes). Check free disk space.");
+                }
+                var moved = false;
+                for (var mv = 0; mv < 10 && !moved; mv++) {
+                    if (mv) $.sleep(300);
+                    moved = partDest.rename(outName);
+                }
+                if (!moved) return spidxFail("Could not finish the file in the incoming folder (another program may hold it). The rendered video is at: " + written.fsName);
+                try { written.remove(); } catch (e7) {}
+            }
+        }
+
+        if (!jobId && !spidxHasMediaEncoder()) {
+            // No Media Encoder installed: do NOT pretend something was queued - say what Premiere said.
+            return spidxFail("Premiere Pro could not export this sequence. "
+                + (firstError ? "Premiere said: " + firstError : "The export returned \"" + directReturn + "\" and no file appeared in " + tmpDir.fsName + ".")
+                + " Preset: " + preset.fsName + ". Check that the sequence has content" + (rangeMode === "inout" ? " (and In/Out points set, or pick \"Entire sequence\")" : "") + ", the preset is a video preset, and the incoming folder is writable.");
+        }
+
+        if (!jobId) {
+            // Fallback: Media Encoder (only if Premiere refused or wrote nothing).
+            try {
+                try { app.encoder.launchEncoder(); } catch (e0) {}
+                var queued = app.encoder.encodeSequence(seq, folder.fsName + "/" + outName, preset.fsName, range, 1);
+                if (queued) {
+                    jobId = String(queued);
+                    via = "media-encoder";
+                    try { app.encoder.startBatch(); } catch (e3) {}
+                }
+            } catch (e2) {
+                return spidxFail("Premiere Pro did not render. Direct export: "
+                    + (firstError ? firstError : ("returned \"" + directReturn + "\" but no file appeared in " + tmpDir.fsName))
+                    + " | Media Encoder fallback: " + e2.toString()
+                    + " | preset: " + preset.fsName);
+            }
+        }
+        if (!jobId) return spidxFail("Premiere Pro did not render. Direct export: "
+            + (firstError ? firstError : ("returned \"" + directReturn + "\" but no file appeared in " + tmpDir.fsName))
+            + " | Media Encoder returned nothing | preset: " + preset.fsName);
+
+        return '{"ok":true,"queued":true,"via":"' + via + '","name":"' + spidxEscape(outName) + '"'
+            + ',"seq":"' + spidxEscape(seq.name) + '","range":"' + label + '","preset":"' + spidxEscape(presetLabel) + '"}';
+    } catch (err) {
+        return spidxFail(err.toString());
+    }
+}
+
 /* ========================================================================
- *  Properties tab — reading/writing Essential Graphics (MOGRT) text
+ *  Properties tab - reading/writing Essential Graphics (MOGRT) text
  *  properties on the selected clip
  *
  *  Premiere's DOM does have a route into a Graphics/MOGRT clip's
  *  Essential Graphics properties: TrackItem.getMGTComponent() returns a
  *  Component whose .properties collection can be read and written with
  *  ComponentParam.getValue()/.setValue(). It's the Premiere equivalent
- *  of the AE panel reaching into a text layer's Source Text property —
+ *  of the AE panel reaching into a text layer's Source Text property -
  *  just a different-shaped API, so it gets its own tab instead of being
  *  folded into "Leaderboard".
  *
  *  Two real rough edges, both confirmed by Adobe's own scripting forum,
  *  not guessed:
- *   1. This is designed around .mogrts authored in After Effects — a
+ *   1. This is designed around .mogrts authored in After Effects - a
  *      .mogrt built entirely inside Premiere's Essential Graphics panel
  *      is not guaranteed to expose the same component tree.
  *   2. A text parameter's value comes back as a PLAIN STRING on some
  *      Premiere builds (~13.1.5/14.0) and as a JSON string like
  *      {"textEditValue":"...","fontTextRunLength":[n],...} on others
- *      (14.1+). Both are handled below — see spidxSetGraphicText().
+ *      (14.1+). Both are handled below - see spidxSetGraphicText().
  *      fontTextRunLength has to be updated to match the new text's
  *      length or the JSON branch silently fails to render.
  *
@@ -668,7 +912,7 @@ function spidxSetGraphicText(displayName, text) {
         if (!found) return spidxFail("Select a Graphics (MOGRT) clip on the timeline first.");
 
         var param = found.component.properties.getParamForDisplayName(String(displayName));
-        if (!param) return spidxFail("Property \"" + displayName + "\" was not found on the selected clip — the selection may have changed. Click Refresh.");
+        if (!param) return spidxFail("Property \"" + displayName + "\" was not found on the selected clip - the selection may have changed. Click Refresh.");
 
         spidxWriteParamText(param, text);
         return '{"ok":true}';

@@ -1,5 +1,5 @@
 ; ============================================================================
-;  Spidx Uploader — Inno Setup installer
+;  Spidx Uploader - Inno Setup installer
 ;
 ;  Build:  install Inno Setup 6 (https://jrsoftware.org/isdl.php), then
 ;          right-click this file > Compile, or run:
@@ -27,14 +27,14 @@
 ;  first-run setup page (or Dashboard > Account > Plugins) installs them, with the elevated
 ;  scripts that sit next to them. (The Photoshop step used to stall the installer.)
 ;
-;  Installs per-user into %LOCALAPPDATA%\Programs — deliberately NOT
+;  Installs per-user into %LOCALAPPDATA%\Programs - deliberately NOT
 ;  Program Files: the helper writes its own config, logs, queue, browser
 ;  profile and the incoming folder next to itself, and Program Files
 ;  would need elevation for every one of those writes.
 ; ============================================================================
 
 #define AppName        "Spidx Uploader"
-#define AppVersion     "2.8.0"
+#define AppVersion     "3.0.0"
 #define AppPublisher   "Spidx"
 #define AppExeVbs      "Spidx Uploader.vbs"
 #define CepExtIdAE     "com.spidx.uploader.ae"
@@ -65,6 +65,11 @@ OutputBaseFilename=SpidxUploaderSetup
 Compression=lzma2/max
 SolidCompression=yes
 WizardStyle=modern
+; the same look as the Updater and the Dashboard (made from Tools\brand; 1x and 2x for high-DPI screens)
+WizardImageFile=wizard-large.bmp,wizard-large-2x.bmp
+WizardSmallImageFile=wizard-small.bmp,wizard-small-2x.bmp
+WizardImageAlphaFormat=none
+WizardSizePercent=105
 ArchitecturesInstallIn64BitMode=x64compatible
 UninstallDisplayIcon={app}\App\tray-icon.ico
 SetupIconFile=..\App\tray-icon.ico
@@ -81,7 +86,7 @@ Name: "autostart";    Description: "Start Spidx Uploader when I sign in to Windo
 [Files]
 ; ---- helper / engine ----
 Source: "..\App\*";    DestDir: "{app}\App";    Flags: ignoreversion recursesubdirs createallsubdirs; \
-    Excludes: "node_modules\*,incoming\*,browser-profile\*,helper.log,helper-events.jsonl,queue.json,helper-state.json,license-cache.json,google-token.json,last-upload.json,device-id.json,.pending-license-code,.tray.pid,diagnostics\*,update-cache.json,plugin-updates-cache.json,consent.json,upload-history.json"
+    Excludes: "node_modules\*,incoming\*,browser-profile\*,helper.log,helper-events.jsonl,queue.json,failed-uploads.json,helper-state.json,license-cache.json,google-token.json,last-upload.json,device-id.json,.pending-license-code,.tray.pid,diagnostics\*,update-cache.json,plugin-updates-cache.json,consent.json,upload-history.json,render-usage.json"
 ; ---- Photoshop (UXP) panel: ONLY the packaged .ccx ships -- the raw UXP
 ; source folder is intentionally left out of the installer entirely.
 ; The Windows installer does NOT install any panel (the Photoshop step used to stall setup).
@@ -119,7 +124,7 @@ Name: "{app}\App\incoming"
 ; Unsigned CEP panels only load with PlayerDebugMode on. That per-user key is set by the panel
 ; installers themselves (Install AE Panel.bat / Install PPRO Panel.bat), not by this script.
 
-; "spidx://" deep link — lets the Discord bot's "Activate" button open this
+; "spidx://" deep link - lets the Discord bot's "Activate" button open this
 ; app directly with a license code pre-filled (see App\protocol-handler.js
 ; for what handles it). HKCU only: no elevation needed, matches
 ; PrivilegesRequired=lowest above, and it's a per-user association anyway.
@@ -174,6 +179,7 @@ Type: files;          Name: "{app}\App\queue.json"
 Type: files;          Name: "{app}\App\helper-state.json"
 Type: files;          Name: "{app}\App\.pending-license-code"
 Type: files;          Name: "{app}\App\.tray.pid"
+Type: filesandordirs; Name: "{userappdata}\Spidx Uploader\pack"
 
 [Code]
 var
@@ -231,7 +237,7 @@ end;
 //  Close a running copy before overwriting its files (update support).
 //
 //  This is a pure Node app with no bundled .exe, so Windows won't lock
-//  App\*.js the way it would a loaded .exe/.dll — files copy over a
+//  App\*.js the way it would a loaded .exe/.dll - files copy over a
 //  running process just fine. The problem is what happens AFTER: Node
 //  already has the old code loaded in memory, so the running tray/server
 //  processes keep executing the OLD version until someone manually quits
@@ -240,7 +246,7 @@ end;
 //  tray.js writes its own PID to App\.tray.pid on every startup (see its
 //  checkSingleInstance()). A real Win32 AppMutex would be the usual Inno
 //  mechanism here, but creating one needs native code that a plain Node
-//  app doesn't have — this PID file + taskkill does the same job for a
+//  app doesn't have - this PID file + taskkill does the same job for a
 //  Node app specifically, and doubles as the single-instance guard that
 //  stops a double-launch from opening two tray icons.
 //
@@ -249,7 +255,7 @@ end;
 //
 //  /T also kills the child server.js (spawned by tray.js) in the same
 //  tree. Silently does nothing if the file's missing or the PID is
-//  already dead (ResultCode is ignored on purpose) — a fresh install,
+//  already dead (ResultCode is ignored on purpose) - a fresh install,
 //  or the app just not running, are both completely normal.
 // --------------------------------------------------------------------------
 procedure CloseRunningCopy();
@@ -303,7 +309,7 @@ end;
 // --------------------------------------------------------------------------
 //  Node.js check. The helper is a Node app; without Node nothing runs, and
 //  the old failure mode was a console window flashing an error the user
-//  never got to read. Offer the download instead, but let them continue —
+//  never got to read. Offer the download instead, but let them continue -
 //  start-tray.bat can still install Node itself from a bundled
 //  node-installer.msi if one was shipped alongside.
 // --------------------------------------------------------------------------
@@ -340,7 +346,7 @@ begin
     Exit;
 
   if FileExists(ExpandConstant('{src}\App\node-installer.msi')) then
-    Exit; // bundled installer present — start-tray.bat handles it
+    Exit; // bundled installer present - start-tray.bat handles it
 
   if MsgBox('Node.js was not found on this computer.' + #13#10#13#10 +
             'Spidx Uploader needs it to run. Open the Node.js download page now?' + #13#10 +

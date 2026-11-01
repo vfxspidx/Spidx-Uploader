@@ -42,10 +42,10 @@ if errorlevel 1 (
 
     echo Found: !NODE_EXE!
 ) else (
-    rem Found via PATH — NODE_EXE is still the bare word "node" at this
+    rem Found via PATH - NODE_EXE is still the bare word "node" at this
     rem point, which breaks the NODE_DIR lookup below (it would resolve
     rem against the current directory instead of Node's actual install
-    rem folder). Resolve it to a real, full path here — using a guard
+    rem folder). Resolve it to a real, full path here - using a guard
     rem variable instead of goto, since goto out of a for loop nested
     rem inside this else-block confuses cmd's parenthesis parsing and
     rem crashes the script on launch.
@@ -109,7 +109,7 @@ rem ------------------------------------------------------------------------
 rem  Auto-installs Node.js from a bundled installer sitting next to this
 rem  .bat file, if one is present. Drop the official Node.js Windows
 rem  Installer (from https://nodejs.org, the .msi download) here and rename
-rem  it to "node-installer.msi" — this lets anyone you hand the project to
+rem  it to "node-installer.msi" - this lets anyone you hand the project to
 rem  skip the manual "go install Node.js yourself" step entirely.
 rem  Returns errorlevel 0 and sets NODE_EXE on success, errorlevel 1 if no
 rem  installer was found or the install didn't take.
@@ -123,7 +123,7 @@ if not exist "%NODE_INSTALLER%" (
 
 echo.
 echo Found bundled installer: %NODE_INSTALLER%
-echo Installing Node.js silently — Windows may show a one-time permission prompt...
+echo Installing Node.js silently - Windows may show a one-time permission prompt...
 echo.
 
 start "" /wait msiexec /i "%NODE_INSTALLER%" /quiet /norestart /l*v "%TEMP%\spidx_node_install.log"

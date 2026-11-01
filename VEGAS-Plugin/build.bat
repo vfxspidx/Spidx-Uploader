@@ -3,13 +3,13 @@ setlocal enabledelayedexpansion
 
 rem ============================================================================
 rem  Builds SpidxUploaderExtension.cs into SpidxUploader.dll using csc.exe
-rem  (ships with every Windows .NET Framework install — no Visual Studio
+rem  (ships with every Windows .NET Framework install - no Visual Studio
 rem  needed). Run this once after any change to the .cs file, then copy the
 rem  resulting .dll into VEGAS's Application Extensions folder (see below).
 rem ============================================================================
 
 rem --- Always work from THIS script's own folder, not whatever the current
-rem     directory happens to be — "Run as administrator" (and some shortcut
+rem     directory happens to be - "Run as administrator" (and some shortcut
 rem     setups) can launch a .bat with the working directory set to
 rem     C:\Windows\System32 instead, which makes every relative path below
 rem     resolve to the wrong place. %~dp0 is this .bat file's own folder,
@@ -58,7 +58,7 @@ if not defined VEGAS_DLL (
     echo Open this .bat file in a text editor and add your actual VEGAS install
     echo folder to the list above ^(or set VEGAS_DLL directly^), then run it again.
     echo.
-    echo Older VEGAS versions ^(13 and below^) use Sony.Vegas.dll instead —
+    echo Older VEGAS versions ^(13 and below^) use Sony.Vegas.dll instead -
     echo if that's you, also swap the "using ScriptPortal.Vegas;" line in
     echo SpidxUploaderExtension.cs to "using Sony.Vegas;" and point VEGAS_DLL
     echo at Sony.Vegas.dll instead.
@@ -79,9 +79,9 @@ rem --- Compile ---
 
 if errorlevel 1 (
     echo.
-    echo Build FAILED — see the error above. If it names a missing member
+    echo Build FAILED - see the error above. If it names a missing member
     echo on the Vegas/CustomCommand/DockableControl types, that's a real
-    echo API mismatch for your VEGAS version — paste the exact error back.
+    echo API mismatch for your VEGAS version - paste the exact error back.
     pause
     exit /b 1
 )

@@ -1,16 +1,16 @@
 "use strict";
 
 /* ========================================================================
- *  Spidx Uploader — After Effects panel (CEP)
+ *  Spidx Uploader - After Effects panel (CEP)
  *
  *  This is the AE twin of the Photoshop UXP panel. It deliberately speaks
- *  the exact same protocol as that panel — small files inside App\incoming:
+ *  the exact same protocol as that panel - small files inside App\incoming:
  *
- *    .batch-config.json   written here  — how many files the engine waits for
- *    .batch-status.json   read here     — live collection/upload progress
- *    .engine-status.json  read here     — tier, destination, device limit
- *    .batch-force-send    written here  — "Send now"
- *    .batch-cancel        written here  — "Cancel"
+ *    .batch-config.json   written here  - how many files the engine waits for
+ *    .batch-status.json   read here     - live collection/upload progress
+ *    .engine-status.json  read here     - tier, destination, device limit
+ *    .batch-force-send    written here  - "Send now"
+ *    .batch-cancel        written here  - "Cancel"
  *
  *  so one running Spider Engine serves Photoshop and After Effects at the
  *  same time with no changes on its side beyond accepting PNG as well as
@@ -33,7 +33,7 @@ var BATCH_CONFIG_NAME = ".batch-config.json";
 var BATCH_STATUS_NAME = ".batch-status.json";
 var ENGINE_STATUS_NAME = ".engine-status.json";
 // Mirrored by server.js's syncDefaultCameraRawPreset() whenever the
-// Dashboard's preset fields change — reading it here (instead of
+// Dashboard's preset fields change - reading it here (instead of
 // re-deriving anything) means this indicator can never drift from
 // what actually happens to the file after Upload is clicked.
 var CAMERA_RAW_PRESET_NAME = ".default-camera-raw-preset.json";
@@ -47,7 +47,7 @@ var ENGINE_STALE_MS = 2 * 60 * 1000;
 
 var MULTI_BATCH_TIERS = ["pro", "dev", "tester"];
 // Same tier set gates every Pro+ feature (batch 2/3, Photoshop + Upload,
-// Replace Text) — one name, used everywhere below.
+// Replace Text) - one name, used everywhere below.
 var PRO_FEATURE_TIERS = MULTI_BATCH_TIERS;
 
 var incomingPath = localStorage.getItem(FOLDER_KEY) || "";
@@ -90,7 +90,7 @@ var folderPathLabel = $("folderPath");
 var batchButtons = Array.prototype.slice.call(document.querySelectorAll(".batch-opt"));
 
 /* ---------------------------------------------------------------------- */
-/*  CEP plumbing — ExtendScript calls + file system                       */
+/*  CEP plumbing - ExtendScript calls + file system                       */
 /* ---------------------------------------------------------------------- */
 
 function evalScript(script) {
@@ -221,7 +221,7 @@ function updateFolderLabel() {
 }
 
 /* ---------------------------------------------------------------------- */
-/*  Batch selector — identical semantics to the Photoshop panel           */
+/*  Batch selector - identical semantics to the Photoshop panel           */
 /* ---------------------------------------------------------------------- */
 
 function tierAllowsMultiBatch() {
@@ -266,7 +266,21 @@ function setSelectedBatchCount(count) {
         btn.classList.toggle("active", Number(btn.dataset.count) === count);
     });
     updateFolderNameVisibility();
+    updateRenderBatchLock();
 }
+// Batches ("Files per upload" 2 or 3) are for thumbnails only. While one is selected or being collected, rendering a
+// video is blocked - a render is a single upload of its own and must not get mixed up with a batch of stills.
+var BATCH_RENDER_NOTE = "Batches are for thumbnails. Set Files per upload to 1 to render a video.";
+function renderBlockedByBatch() { return selectedBatchCount > 1 || lastBatchState === "collecting"; }
+function updateRenderBatchLock() {
+    if (typeof aeRenderButton === "undefined" || !aeRenderButton || typeof aeRenderLine === "undefined" || !aeRenderLine) return;
+    var blocked = renderBlockedByBatch();
+    if (!busy) aeRenderButton.disabled = blocked;
+    aeRenderButton.title = blocked ? BATCH_RENDER_NOTE : "";
+    if (blocked) aeRenderLine.textContent = BATCH_RENDER_NOTE;
+    else if (aeRenderLine.textContent === BATCH_RENDER_NOTE || aeRenderLine.textContent === "") aeRenderLine.textContent = "";
+}
+
 
 batchButtons.forEach(function (btn) {
     btn.addEventListener("click", function () {
@@ -319,7 +333,45 @@ $("changeFolder").addEventListener("click", function () {
 /*  Status polling (engine + batch)                                       */
 /* ---------------------------------------------------------------------- */
 
+
+// Free plan: a monthly allowance of "Render & upload" videos. The helper counts them and publishes the
+// numbers in .engine-status.json ("renders": { used, limit - null = unlimited, remaining }); the panel
+// only reads them, so it can warn BEFORE a render that the helper would have to refuse.
+var currentRenders = null;
+var currentPack = null;
+// Translations: the helper writes the dictionary of the chosen language next to the incoming folder.
+var panelI18nLoaded = "";
+function panelI18nSync(status) {
+    var lang = (status && status.language) || "en";
+    if (lang === panelI18nLoaded || !window.PanelI18n) return;
+    if (lang === "en") { panelI18nLoaded = lang; if (window.PanelI18n.language() !== "en") window.PanelI18n.set("en", null); return; }
+    if (typeof incomingPath === "undefined" || !incomingPath) return;
+    var data = readJsonFile(joinPath(incomingPath, ".panel-i18n.json"));
+    if (data && data.language === lang && data.strings) {
+        panelI18nLoaded = lang;
+        window.PanelI18n.set(lang, data.strings);
+    }
+}
+
+
+function rendersLimitReached() {
+    return !!(currentRenders && currentRenders.limit != null && currentRenders.used >= currentRenders.limit);
+}
+
+function rendersNote() {
+    if (!currentRenders || currentRenders.limit == null) return "";
+    return "Renders this month: " + currentRenders.used + " of " + currentRenders.limit + (currentRenders.remaining === 0 ? " - Pro has unlimited renders." : "");
+}
+
+function rendersLimitCard() {
+    setCard("Render limit reached", "The free plan includes " + currentRenders.limit + " video renders per month. Pro has unlimited renders.", "error");
+}
+
 function applyEngineStatus(status) {
+    currentRenders = (status && status.renders) || null;
+    currentPack = (status && status.pack) || null;
+    panelI18nSync(status);
+    if (typeof aeRenderLine !== "undefined" && aeRenderLine && (!aeRenderLine.textContent || /^Renders this month/.test(aeRenderLine.textContent))) aeRenderLine.textContent = rendersNote();
     renderPresetSelect(status && status.presets, status && status.activePreset, status && status.activePresetModified);
     var stamp = status && Number(status.updatedAt);
     var online = !!(stamp && (Date.now() - stamp) < ENGINE_STALE_MS);
@@ -329,12 +381,12 @@ function applyEngineStatus(status) {
         if (!online) {
             setCard(
                 "Helper not running",
-                'Start "Spidx Uploader.vbs" (or the desktop shortcut) — nothing is watching the incoming folder right now.',
+                'Start "Spidx Uploader.vbs" (or the desktop shortcut) - nothing is watching the incoming folder right now.',
                 "error"
             );
             setProgress(0);
         } else if (!busy) {
-            setCard("Ready", "Helper is running — export away.", "ok");
+            setCard("Ready", "Helper is running - export away.", "ok");
         }
     }
 
@@ -358,6 +410,7 @@ function applyEngineStatus(status) {
         currentRolesKey = rolesKey;
         if (!tierAllowsMultiBatch() && selectedBatchCount > 1) setSelectedBatchCount(1);
         setBatchControlsLocked(false);
+        sptUpdateLock();
         updateProFeatureLocks();
     }
 
@@ -406,7 +459,7 @@ function applyBatchStatus(status) {
         var links = (status && status.links) || [];
         setCard(
             "Uploaded",
-            links.length ? "Link copied to the clipboard." : "Sent — no link was detected.",
+            links.length ? "Link copied to the clipboard." : "Sent - no link was detected.",
             "ok"
         );
         setSelectedBatchCount(1);
@@ -414,6 +467,7 @@ function applyBatchStatus(status) {
     }
 
     lastBatchState = state;
+    updateRenderBatchLock();
 }
 
 function poll() {
@@ -425,7 +479,7 @@ function poll() {
 }
 
 // The "Photoshop + Upload" button only makes sense once there's an
-// Action configured for it to run — read the same file the Dashboard
+// Action configured for it to run - read the same file the Dashboard
 // writes so this can never drift from what server.js will actually do
 // with the file.
 function updateRouteLine() {
@@ -437,9 +491,9 @@ function updateRouteLine() {
     if (uploadPsButton) uploadPsButton.disabled = busy || !hasPreset || !proAllowed;
     if (routeLine) {
         routeLine.textContent = !proAllowed
-            ? "Photoshop + Upload is a Pro feature — upgrade your tier to enable it."
+            ? "Photoshop + Upload is a Pro feature - upgrade your tier to enable it."
             : hasPreset
-                ? "Photoshop + Upload runs \u201c" + preset.actionName + "\u201d on your currently active Photoshop document \u2014 requires Photoshop already open."
+                ? "Photoshop + Upload runs \u201c" + preset.actionName + "\u201d on your currently active Photoshop document - requires Photoshop already open."
                 : "Set a Camera Raw Action in the Dashboard to enable Photoshop + Upload.";
     }
 }
@@ -489,13 +543,13 @@ function performUpload(viaPhotoshop) {
             // Not a hard block: the frame still lands in incoming and gets
             // picked up whenever the helper comes back. The panel just
             // stops pretending it was sent.
-            setCard("Helper not running", "Saving the frame anyway — it uploads when the helper starts.", "error");
+            setCard("Helper not running", "Saving the frame anyway - it uploads when the helper starts.", "error");
         }
 
         setCard("Saving frame...", "Exporting the current frame as PNG.");
         setProgress(45);
         // The second argument only changes the saved filename (adds a
-        // .ps marker before .png) — server.js's needsCameraRaw() is what
+        // .ps marker before .png) - server.js's needsCameraRaw() is what
         // actually decides whether to route it through Photoshop, based
         // on that marker plus a configured preset. See server.js.
         task = evalScript("spidxSaveFrame(" + esArg(incomingPath) + ", " + (viaPhotoshop ? "true" : "false") + ")");
@@ -530,7 +584,7 @@ function finishUpload(error, result, activeButton, otherButton, defaultLabel) {
     if (selectedBatchCount > 1) {
         setCard(
             "Added to batch",
-            "Waiting for the rest (" + selectedBatchCount + " total) — export the next one the same way.",
+            "Waiting for the rest (" + selectedBatchCount + " total) - export the next one the same way.",
             "ok"
         );
     } else {
@@ -574,24 +628,141 @@ function activateTab(target) {
     var pages = document.querySelectorAll(".tab-page");
     for (var j = 0; j < pages.length; j++) pages[j].classList.toggle("active", pages[j].id === target);
     if (target === "tabLeaderboard" && !lbLoadedOnce) lbLoad();
+    if (target === "tabSpt") { sptTemplatesLoaded = false; sptUpdateLock(); }   // re-read templates.json every time the tab opens (the Dashboard can change it)
 }
 
 for (var ti = 0; ti < tabButtons.length; ti++) {
     tabButtons[ti].addEventListener("click", function () { activateTab(this.getAttribute("data-tab")); });
 }
 
+
 /* ------------------------------------------------------------------ */
-/*  Leaderboard tab — SpidxTracker (Fortnite)                           */
+/*  SPT tab - bundled presets (SPT / dev / tester roles)                 */
+/* ------------------------------------------------------------------ */
+
+var SPT_ROLES_AE = ["spt", "dev", "tester"];
+var sptSelect = $("sptPresetSelect");
+var sptLine = $("sptLine");
+var sptLoadedOnce = false;
+
+function sptAllowed() {
+    var roles = currentRoles.length ? currentRoles : (currentTier ? [currentTier] : []);
+    for (var i = 0; i < SPT_ROLES_AE.length; i++) if (roles.indexOf(SPT_ROLES_AE[i]) !== -1) return true;
+    return false;
+}
+
+function sptLoad() {
+    var ext = packRootAE();
+    evalScript("spidxListSptPresets(" + esArg(ext) + ")").then(function (result) {
+        sptLoadedOnce = true;
+        sptSelect.innerHTML = "";
+        (result.items || []).forEach(function (item) {
+            var option = document.createElement("option");
+            option.value = item.file;
+            option.textContent = item.name;
+            sptSelect.appendChild(option);
+        });
+        if (!sptSelect.options.length) sptLine.textContent = "No presets are bundled with this panel yet.";
+    }).catch(function (error) { sptLine.textContent = error.message; });
+}
+
+function sptUpdateLock() {
+    var locked = !sptAllowed();
+    $("tabBtnSpt").classList.toggle("locked", locked);
+    $("sptLocked").style.display = locked ? "" : "none";
+    $("sptBody").style.display = locked ? "none" : "";
+    $("sptLockedText").textContent = "Your role: " + ((currentRoles && currentRoles.length) ? currentRoles.join(" + ").toUpperCase() : "unknown (is the helper running?)")
+        + ". These presets are a separate add-on - ask for the SPT role to unlock this tab.";
+    if (!locked) {
+        if (!sptLoadedOnce) sptLoad();
+        if (!sptTemplatesLoaded) sptLoadTemplates();
+    }
+}
+
+function sptApplyNow(mode) {
+    if (!sptAllowed()) { sptUpdateLock(); return; }
+    if (!sptSelect.value) { sptLine.textContent = "Pick a preset first."; return; }
+    var ext = "";
+    try { ext = decodeURI(window.__adobe_cep__.getSystemPath("extension")).replace(/^file:\/\/\//i, ""); } catch (e) {}
+    sptLine.textContent = "Applying...";
+    evalScript("spidxApplySptPreset(" + esArg(ext) + ", " + esArg(sptSelect.value) + ", " + esArg(mode) + ")").then(function () {
+        sptLine.textContent = mode === "adjustment" ? "Added an adjustment layer with the preset." : "Preset applied to the selected layers.";
+    }).catch(function (error) { sptLine.textContent = error.message; });
+}
+
+var sptTemplateSelect = $("sptTemplateSelect");
+var sptTemplateLine = $("sptTemplateLine");
+
+// The Thumbnail Pack content (templates, presets) is NOT inside the panel: the helper downloads it for accounts that
+// have the Pack into %APPDATA%\Spidx Uploader\pack\ae. The host functions read "<root>/templates" and "<root>/presets".
+function packRootAE() {
+    try {
+        var raw = decodeURI(window.__adobe_cep__.getSystemPath("userData")).replace(/^file:\/\/\//i, "").replace(/^\/(?=[A-Za-z]:)/, "");
+        return raw ? raw.replace(/[\\\/]+$/, "") + "/Spidx Uploader/pack/ae" : "";
+    } catch (e) { return ""; }
+}
+
+function sptExtPath() { return packRootAE(); }
+
+// What to tell the user when the lists are empty: the Pack is downloaded by the helper, not shipped with the panel.
+function packEmptyMessage(what) {
+    var p = currentPack;
+    if (p && p.state === "syncing") return "The Thumbnail Pack is downloading... try again in a moment.";
+    if (p && p.state === "error") return "The Thumbnail Pack could not be downloaded: " + (p.message || "no answer from the server") + ".";
+    if (p && p.state === "none") return "No " + what + " yet - they download automatically for accounts that have the Thumbnail Pack.";
+    return "No " + what + " yet. They download automatically for accounts with the Thumbnail Pack - check the Dashboard > Templates.";
+}
+
+var sptTemplatesLoaded = false;
+
+function sptLoadTemplates() {
+    var keep = sptTemplateSelect.value;
+    evalScript("spidxListSptTemplates(" + esArg(sptExtPath()) + ")").then(function (result) {
+        sptTemplatesLoaded = true;
+        sptTemplateLine.textContent = "";
+        sptTemplateSelect.innerHTML = "";
+        (result.items || []).forEach(function (item) {
+            var option = document.createElement("option");
+            option.value = String(item.id);
+            option.textContent = item.name;
+            sptTemplateSelect.appendChild(option);
+        });
+        if (keep) sptTemplateSelect.value = keep;
+        if (sptTemplateSelect.selectedIndex < 0 && sptTemplateSelect.options.length) sptTemplateSelect.selectedIndex = 0;
+        if (!sptTemplateSelect.options.length) sptTemplateLine.textContent = packEmptyMessage("text templates");
+    }).catch(function (error) { sptTemplateLine.textContent = error.message; });
+}
+
+$("sptUseLbNick").addEventListener("click", function () {
+    var player = (typeof lbSelectedPlayer === "function") ? lbSelectedPlayer() : null;
+    if (!player) { sptTemplateLine.textContent = "Pick a player in the Leaderboard tab first."; return; }
+    $("sptNickInput").value = player.alias || player.name || "";
+    sptTemplateLine.textContent = "";
+});
+
+$("sptInsertTemplate").addEventListener("click", function () {
+    if (!sptAllowed()) { sptUpdateLock(); return; }
+    if (!sptTemplateSelect.value) { sptTemplateLine.textContent = "Pick a template first."; return; }
+    sptTemplateLine.textContent = "Inserting...";
+    evalScript("spidxInsertSptTemplate(" + esArg(sptExtPath()) + ", " + esArg(sptTemplateSelect.value) + ", " + esArg($("sptNickInput").value) + ")").then(function (result) {
+        sptTemplateLine.textContent = "Inserted: " + result.name;
+    }).catch(function (error) { sptTemplateLine.textContent = error.message; });
+});
+
+$("sptApply").addEventListener("click", function () { sptApplyNow("layers"); });
+$("sptApplyAdj").addEventListener("click", function () { sptApplyNow("adjustment"); });
+
+/* ------------------------------------------------------------------ */
+/*  Leaderboard tab - SpidxTracker (Fortnite)                           */
 /*                                                                      */
 /*  Ported from the standalone SpidxLeaderboardPanel.jsx ScriptUI       */
 /*  panel. Fetching and rendering happen here in plain JS (a CEP panel  */
-/*  is just Chromium — fetch()/DOM beats the old raw-Socket-and-temp-   */
+/*  is just Chromium - fetch()/DOM beats the old raw-Socket-and-temp-   */
 /*  .bat-file approach that ScriptUI needed). Only touching the actual  */
 /*  AE layer (insert / Essential Graphics) still goes through           */
-/*  ExtendScript — see spidxLeaderboardInsertAndExpose() in spidx.jsx.  */
+/*  ExtendScript - see spidxLeaderboardInsertAndExpose() in spidx.jsx.  */
 /* ------------------------------------------------------------------ */
 
-var LB_API_HOST = "http://169.58.221.14:8080";
 var LB_CACHE_NAME = ".leaderboard-cache.json";
 
 var lbRegion = $("lbRegion");
@@ -639,7 +810,7 @@ function lbUseCache(reasonWhyLive) {
     }
     lbPlayers = cache.players;
     lbRenderRows();
-    lbStatus.textContent = "Offline \u2014 cached data from " + lbCacheAgeText(cache.savedAt)
+    lbStatus.textContent = "Offline - cached data from " + lbCacheAgeText(cache.savedAt)
         + " (" + lbPlayers.length + " players) \u00b7 " + reasonWhyLive;
     lbStatus.className = "card-sub error";
 }
@@ -714,6 +885,33 @@ function lbQuery() {
     return parts.length ? ("?" + parts.join("&")) : "";
 }
 
+var LB_REQUEST_NAME = ".leaderboard-request.json";
+var LB_RESULT_NAME = ".leaderboard-result.json";
+
+// The leaderboard server sends no CORS headers; instead of switching Chromium's web security off for the
+// whole panel, the helper fetches it for us (App\\server.js, checkLeaderboardRequest) via two small files.
+function lbRequest(query) {
+    return new Promise(function (resolve, reject) {
+        if (!incomingPath) { reject(new Error("Link the incoming folder first (Change incoming folder).")); return; }
+        var id = String(Date.now()) + "-" + Math.random().toString(16).slice(2);
+        try { writeTextFile(joinPath(incomingPath, LB_REQUEST_NAME), JSON.stringify({ id: id, query: query })); }
+        catch (e) { reject(new Error("Could not talk to the helper: " + e.message)); return; }
+        var started = Date.now();
+        var timer = setInterval(function () {
+            var result = readJsonFile(joinPath(incomingPath, LB_RESULT_NAME));
+            if (result && result.id === id) {
+                clearInterval(timer);
+                if (result.ok) resolve(result.json); else reject(new Error(result.error || "The helper could not reach the leaderboard server."));
+                return;
+            }
+            if (Date.now() - started > 12000) {
+                clearInterval(timer);
+                reject(new Error("The helper did not answer - is Spidx Uploader running? (tray icon)"));
+            }
+        }, 250);
+    });
+}
+
 function lbLoad() {
     lbLoadedOnce = true;
     lbCopyBtn.disabled = true;
@@ -722,15 +920,7 @@ function lbLoad() {
     lbStatus.textContent = "Loading...";
     lbStatus.className = "card-sub";
 
-    var controller = (typeof AbortController !== "undefined") ? new AbortController() : null;
-    var timeoutId = controller ? setTimeout(function () { controller.abort(); }, 5000) : null;
-
-    fetch(LB_API_HOST + "/api/fortnite" + lbQuery(), controller ? { signal: controller.signal } : {})
-        .then(function (res) {
-            if (timeoutId) clearTimeout(timeoutId);
-            if (!res.ok) throw new Error("Server responded with " + res.status);
-            return res.json();
-        })
+    lbRequest(lbQuery())
         .then(function (json) {
             if (!json || !json.success) {
                 lbUseCache("API responded, but without the expected data.");
@@ -749,7 +939,6 @@ function lbLoad() {
             lbStatus.className = "card-sub ok";
         })
         .catch(function (err) {
-            if (timeoutId) clearTimeout(timeoutId);
             lbUseCache(err && err.message ? err.message : "Could not reach the leaderboard server.");
         });
 }
@@ -910,9 +1099,123 @@ presetSelect.addEventListener("change", function () {
         presetSwitching = false;
         presetSelect.disabled = false;
         presetListKey = "";   // re-read the list on the next status
-        if (answered && result.ok) setCard("Preset applied", name + (result.message ? " \u2014 " + result.message : ""), "ok");
+        if (answered && result.ok) setCard("Preset applied", name + (result.message ? " - " + result.message : ""), "ok");
         else setCard("Preset not applied", answered ? (result.message || "The helper refused it.") : "The helper didn't answer - is it running?", "error");
     }, 200);
+});
+
+
+/* ---------------------------------------------------------------------- */
+/*  Render video: After Effects renders (its own render queue), the helper uploads  */
+/* ---------------------------------------------------------------------- */
+
+var AE_RENDER_TEMPLATE_KEY = "spidxAeRenderTemplate";
+var AE_RENDER_RANGE_KEY = "spidxAeRenderRange";
+var aeRenderTemplateSelect = $("aeRenderTemplate");
+var aeRenderRangeSelect = $("aeRenderRange");
+var aeRenderButton = $("aeRenderUpload");
+var aeRenderLine = $("aeRenderLine");
+
+var aeRenderLoading = false;
+var aeRenderTries = 0;
+
+function aeRenderLoadTemplates() {
+    if (aeRenderLoading) return;
+    aeRenderLoading = true;
+    aeRenderTries++;
+    aeRenderLine.textContent = "";
+    evalScript("spidxListRenderTemplates()").then(function (result) {
+        var saved = localStorage.getItem(AE_RENDER_TEMPLATE_KEY) || "";
+        aeRenderTemplateSelect.innerHTML = "";
+        var items = result.items || [];
+        for (var i = 0; i < items.length; i++) {
+            var option = document.createElement("option");
+            option.value = items[i].name;
+            option.textContent = items[i].name;
+            if (items[i].name === saved) option.selected = true;
+            aeRenderTemplateSelect.appendChild(option);
+        }
+        if (!items.length) aeRenderLine.textContent = "No render templates found - click Refresh list.";
+    }).catch(function (error) {
+        aeRenderTemplateSelect.innerHTML = "";
+        aeRenderLine.textContent = error.message;
+    }).then(function () { aeRenderLoading = false; });
+}
+
+// The list used to be read exactly once at panel start - if After Effects was still opening its
+// project at that moment the dropdown stayed empty for good. Now an empty list is retried in the
+// background (a few times) and whenever the panel gets focus again.
+function aeRenderRetryIfEmpty() {
+    if (busy || aeRenderLoading) return;
+    if (aeRenderTemplateSelect.options.length) return;
+    aeRenderLoadTemplates();
+}
+setInterval(function () { if (aeRenderTries < 12) aeRenderRetryIfEmpty(); }, 4000);
+window.addEventListener("focus", aeRenderRetryIfEmpty);
+
+aeRenderTemplateSelect.addEventListener("change", function () { localStorage.setItem(AE_RENDER_TEMPLATE_KEY, aeRenderTemplateSelect.value); });
+aeRenderRangeSelect.addEventListener("change", function () { localStorage.setItem(AE_RENDER_RANGE_KEY, aeRenderRangeSelect.value); });
+aeRenderRangeSelect.value = localStorage.getItem(AE_RENDER_RANGE_KEY) || "entire";
+if (aeRenderRangeSelect.selectedIndex < 0) aeRenderRangeSelect.value = "entire";
+$("aeRenderReload").addEventListener("click", function () { aeRenderTries = 0; aeRenderLoadTemplates(); });
+
+
+// AE / Premiere block their own script engine for the whole render, so the panel cannot ask for a real
+// percentage - but the panel itself keeps running, so it can at least show a live clock.
+var renderClock = null;
+function renderClockStart(button, idleLabel, what) {
+    var startedAt = Date.now();
+    function tick() {
+        var secs = Math.floor((Date.now() - startedAt) / 1000);
+        var clock = Math.floor(secs / 60) + ":" + (secs % 60 < 10 ? "0" : "") + (secs % 60);
+        button.textContent = "Rendering... " + clock;
+        setCard("Rendering", what() + " " + clock + " - the host app stays busy until the render is finished.");
+    }
+    tick();
+    renderClock = setInterval(tick, 1000);
+}
+function renderClockStop() { if (renderClock) { clearInterval(renderClock); renderClock = null; } }
+
+aeRenderButton.addEventListener("click", function () {
+    if (busy) return;
+    if (renderBlockedByBatch()) { setCard("Batches are for thumbnails", "Set Files per upload to 1 to render a video.", "error"); return; }
+    if (rendersLimitReached()) { rendersLimitCard(); return; }
+    var template = aeRenderTemplateSelect.value;
+    if (!template) { setCard("Pick a template", "Choose a render template first (Refresh list if it is empty).", "error"); return; }
+
+    busy = true;
+    aeRenderButton.disabled = true;
+    var aeRenderComp = "";
+    evalScript("spidxContext()").then(function (c) { if (c && c.hasComp) aeRenderComp = c.comp + (c.duration ? " (" + c.duration.toFixed(1) + " s)" : ""); }).catch(function () {});
+    renderClockStart(aeRenderButton, "Render & upload", function () {
+        return (aeRenderComp ? aeRenderComp + " \u00b7 " : "") + (aeRenderRangeSelect.value === "workarea" ? "work area" : "entire composition") + " \u00b7 " + aeRenderTemplateSelect.value + " \u00b7";
+    });
+    var task;
+    try {
+        ensureIncomingFolder(false);
+        if (engineOnline === false) setCard("Helper not running", "The render goes ahead anyway - it uploads when the helper starts.", "error");
+        task = evalScript("spidxRenderComp(" + esArg(incomingPath) + ", " + esArg(template) + ", " + esArg(aeRenderRangeSelect.value) + ")");
+    } catch (error) {
+        renderClockStop();
+        busy = false;
+        aeRenderButton.disabled = false;
+        aeRenderButton.textContent = "Render & upload";
+        setCard("Error", error.message, "error");
+        return;
+    }
+    task.then(function (result) {
+        renderClockStop();
+        setCard("Render finished", result.comp + " (" + result.range + ", " + result.template + ") -> " + result.name + ". The helper is uploading it now.", "ok");
+        aeRenderButton.textContent = "Done";
+    }).catch(function (error) {
+        renderClockStop();
+        setCard("Error", error.message, "error");
+        aeRenderButton.textContent = "Try again";
+    }).then(function () {
+        busy = false;
+        aeRenderButton.disabled = false;
+        setTimeout(function () { aeRenderButton.textContent = "Render & upload"; }, 3000);
+    });
 });
 
 (function boot() {
@@ -920,17 +1223,19 @@ presetSelect.addEventListener("change", function () {
     folderNameInput.value = localStorage.getItem(FOLDER_NAME_KEY) || "";
     setSelectedBatchCount(savedCount === 2 || savedCount === 3 ? savedCount : 1);
     setBatchControlsLocked(false);
+    sptUpdateLock();
     updateFolderLabel();
 
     if (!incomingPath) {
         setCard("Link the incoming folder", 'Click "Change incoming folder" and pick App\\incoming.');
     } else {
         evalScript("spidxContext()").then(function (context) {
-            if (context.hasComp) setCard("Ready", context.comp + " — frame " + context.frame);
+            if (context.hasComp) setCard("Ready", context.comp + " - frame " + context.frame);
             else setCard("Ready", "No composition active yet.");
         }).catch(function () { /* panel still works; the first click reports the real error */ });
     }
 
+    aeRenderLoadTemplates();
     poll();
     setInterval(poll, POLL_MS);
 })();

@@ -1,0 +1,610 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Spidx Uploader - Dashboard</title>
+<link rel="icon" type="image/png" href="{{FAVICON}}">
+<script>window.SPIDX_UI = /*__UI__*/{};</script>
+<script>
+(function () {
+    var root = document.documentElement;
+    var mq = window.matchMedia ? window.matchMedia("(prefers-color-scheme: light)") : null;
+    var choice = (window.SPIDX_UI && window.SPIDX_UI.theme) || "auto";
+    function apply() { root.setAttribute("data-theme", choice === "auto" ? (mq && mq.matches ? "light" : "dark") : choice); }
+    window.spidxSetTheme = function (c) { choice = c; apply(); };
+    window.spidxGetTheme = function () { return choice; };
+    if (mq && mq.addEventListener) mq.addEventListener("change", apply);
+    apply();
+})();
+</script>
+<style>
+/*__CSS__*/
+</style>
+</head>
+<body>
+<div class="app">
+
+    <aside class="side">
+        <div class="brandrow">
+            <img class="mark-img" src="{{LOGO}}" alt="Spidx Uploader" width="34" height="34">
+            <div class="brand"><b>Spidx Uploader</b><span>Dashboard</span></div>
+        </div>
+        <nav class="nav">
+        <button class="tab active" data-page="overview"><svg viewBox="0 0 24 24"><path d="M4 11l8-7 8 7v8a1 1 0 0 1-1 1h-4v-6H9v6H5a1 1 0 0 1-1-1z"/></svg><span class="lbl">Overview</span><span class="kbd">1</span></button>
+        <button class="tab" data-page="history"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2"/></svg><span class="lbl">History</span><span class="kbd">2</span></button>
+        <button class="tab" data-page="activity"><svg viewBox="0 0 24 24"><path d="M3 12h4l2.5-6 4 12 2.5-6H21"/></svg><span class="lbl">Activity</span><span class="kbd">3</span></button>
+        <button class="tab" data-page="templates"><svg viewBox="0 0 24 24"><rect x="4" y="4" width="7" height="7" rx="1.5"/><rect x="13" y="4" width="7" height="7" rx="1.5"/><rect x="4" y="13" width="7" height="7" rx="1.5"/><rect x="13" y="13" width="7" height="7" rx="1.5"/></svg><span class="lbl">Templates</span><span class="kbd">4</span></button>
+        <button class="tab" data-page="settings"><svg viewBox="0 0 24 24"><path d="M4 7h9M17 7h3M4 12h3M11 12h9M4 17h11M19 17h1"/><circle cx="15" cy="7" r="2"/><circle cx="9" cy="12" r="2"/><circle cx="17" cy="17" r="2"/></svg><span class="lbl">Settings</span><span class="kbd">5</span></button>
+        <button class="tab" data-page="status"><svg viewBox="0 0 24 24"><path d="M12 3l7 3v5c0 5-3 8-7 10-4-2-7-5-7-10V6z"/><path d="M9 12l2 2 4-4"/></svg><span class="lbl">Status</span><span class="badge" id="statusBadge"></span><span class="kbd">6</span></button>
+        <button class="tab" data-page="account"><svg viewBox="0 0 24 24"><circle cx="12" cy="8" r="4"/><path d="M4 20c1-4 4-6 8-6s7 2 8 6"/></svg><span class="lbl">Account</span><span class="kbd">7</span></button>
+        </nav>
+        <div class="side-foot">
+            <div class="pills">
+                <span class="pill off" id="tierPill"><span class="dot"></span><span id="tierPillText">tier -</span></span>
+                <span class="pill off" id="helperPill"><span class="dot"></span><span id="helperPillText">helper -</span></span>
+            </div>
+            <div class="pills"><span class="pill off" id="tourReplayBtn" style="cursor:pointer;" title="Show the quick tour again">? Tour</span></div>
+            <div class="theme-seg" id="themeSeg" data-no-i18n>
+                <button type="button" data-theme-set="auto">Auto</button>
+                <button type="button" data-theme-set="dark">Dark</button>
+                <button type="button" data-theme-set="light">Light</button>
+            </div>
+            <div class="ver" id="sideVersion"></div>
+        </div>
+    </aside>
+
+    <main class="main"><div class="main-inner">
+
+    <div class="banner" id="deviceBanner">
+        <span>⚠</span>
+        <div>Device limit reached - this computer is a 3rd device on a paid tier, so it runs as Free. Remove an old device row from the "Devices" tab of your Sheet to free a slot.</div>
+    </div>
+
+    <div class="banner" id="expiryBanner">
+        <span>⏳</span>
+        <div><span id="expiryText"></span> <a href="#" id="expiryEnterCode" style="color:inherit;font-weight:600;">Enter a new code</a></div>
+    </div>
+
+    <div class="banner" id="failBanner">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 9v4"/><path d="M12 17h.01"/><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/></svg>
+        <div><span id="failBannerText"></span> <button class="mini-btn" id="failRetryBtn" type="button">Retry now</button></div>
+    </div>
+
+    <div class="banner" id="renderBanner">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="flex-shrink:0;margin-top:1px;"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>
+        <div><span id="renderBannerText"></span> <a href="https://spidxshop.com/pro" target="_blank" rel="noopener noreferrer" style="color:inherit;font-weight:600;">Get Pro</a></div>
+    </div>
+
+    <div class="banner info" id="updateBanner">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="flex-shrink:0;margin-top:1px;"><path d="M12 19V5M5 12l7-7 7 7"/></svg>
+        <div><span id="updateBannerText"></span> <a href="#" id="updateBannerLink" style="color:inherit;font-weight:600;"></a></div>
+    </div>
+
+    <div class="banner" id="dashboardErrorBanner">
+        <span>⚠</span>
+        <div id="dashboardErrorText"></div>
+    </div>
+
+    <div class="legal-banner" id="legalBanner" style="display:none;">
+        <div>
+            <b id="legalBannerTitle">Please review the Terms of Service, the EULA and the Privacy Policy</b>
+            <span id="legalBannerText"></span>
+        </div>
+        <div class="actions">
+            <a href="https://spidxuploader.com/terms" target="_blank" rel="noopener noreferrer">Terms of Service</a>
+            <a href="https://spidxuploader.com/eula" target="_blank" rel="noopener noreferrer">EULA</a>
+            <a href="https://spidxuploader.com/privacy" target="_blank" rel="noopener noreferrer">Privacy Policy</a>
+            <button class="btn" id="acceptLegalBtn">I agree</button>
+        </div>
+    </div>
+
+    <!-- ============ OVERVIEW ============ -->
+    <div class="page active" id="page-overview">
+
+        <div class="hero">
+            <div class="orb" id="heroOrb"><i></i></div>
+            <div class="hero-main">
+                <div class="hero-title" id="heroTitle">-</div>
+                <div class="hero-sub" id="heroSub"></div>
+            </div>
+            <div class="hero-side">
+                <div class="chips" id="heroChips"></div>
+                <button class="btn ghost" id="heroCopyBtn" style="display:none;">Copy last link</button>
+            </div>
+        </div>
+
+        <div class="tiles">
+            <div class="tile">
+                <div class="k" data-no-i18n>Spider Engine 3</div>
+                <div class="v" id="engineState">-</div>
+                <div class="s" id="engineSub">Waiting for the helper to report.</div>
+            </div>
+            <div class="tile">
+                <div class="k">Destination</div>
+                <div class="v" id="destValue">-</div>
+                <div class="s" id="destSub">Where finished files are sent.</div>
+            </div>
+            <div class="tile">
+                <div class="k">Last upload</div>
+                <div class="v" id="lastValue">-</div>
+                <div class="s" id="lastSub">Nothing uploaded yet.</div>
+                <button class="mini-btn" id="copyLastBtn" style="display:none;">Copy link</button>
+            </div>
+        </div>
+
+        <div class="card" id="tourCardDest">
+            <h2>Upload destination</h2>
+            <p class="desc">Switches immediately - the helper restarts itself in the background to apply it.</p>
+            <div class="dest-options">
+                <button class="dest-btn" id="destWorkupload" data-dest="workupload">
+                    <span class="t">WorkUpload</span>
+                    <span class="d">Upload - works on every tier.</span>
+                </button>
+                <button class="dest-btn" id="destDrive" data-dest="drive">
+                    <span class="t">Google Drive</span>
+                    <span class="d">Upload straight to your own Drive - paid tiers.</span>
+                </button>
+            </div>
+            <div class="note" id="destNote"></div>
+        </div>
+
+        <div class="card" id="recentCard">
+            <div class="card-head"><h2>Recent uploads</h2><button class="linkbtn" id="recentAll">See all</button></div>
+            <div id="recentList"></div>
+            <div class="empty" id="recentEmpty" style="display:none;"><b>No uploads yet</b>Press Upload in a Spidx panel, or use the global shortcut - the result lands here.</div>
+        </div>
+
+        <div class="card" id="tourCardPreset">
+            <h2>Camera Raw editing preset</h2>
+            <p class="desc">Plays a Photoshop Action you recorded once (Window &gt; Actions &gt; record a Camera Raw Filter step) before a file uploads - from the Photoshop panel's own Upload button, and from the After Effects panel's "Photoshop + Upload" button. For After Effects frames specifically, the frame is added as a new layer at the bottom of whatever document is currently active in Photoshop (e.g. your particles/overlay template) - the Action runs on that layer, and the composited result uploads. Leave both fields empty to skip this step and upload as-is.</p>
+            <p class="note" id="presetLockedNote" style="display:none;">This is a Pro feature - upgrade your tier to use it.</p>
+            <div class="field">
+                <label for="presetActionSet">Action Set name</label>
+                <p class="hint">The folder your Action lives in, in Photoshop's Actions panel (Window &gt; Actions) - not the Action itself.</p>
+                <input type="text" id="presetActionSet" placeholder="e.g. Default Actions">
+            </div>
+            <div class="field">
+                <label for="presetActionName">Action name</label>
+                <p class="hint">Must match exactly, spelling and capitalization included, or it won't run.</p>
+                <input type="text" id="presetActionName" placeholder="e.g. Spidx Preset">
+            </div>
+            <div class="actions">
+                <button class="btn" id="presetSaveBtn">Save preset Action</button>
+                <button class="btn danger" id="presetClearBtn" style="display:none;">Clear</button>
+                <span class="note" id="presetNote" style="margin-top:0;"></span>
+            </div>
+            <div class="field" style="margin-top: 4px;">
+                <label>Saved presets</label>
+                <p class="hint">Save the Set/Name above as a named slot, then switch which one is active with one click - no retyping.</p>
+                <div id="presetSlotList"></div>
+                <div class="actions" style="margin-top: 8px;">
+                    <button class="btn ghost" id="presetSaveSlotBtn">Save current as new preset</button>
+                    <span class="note" id="presetSlotNote" style="margin-top:0;"></span>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- ============ HISTORY ============ -->
+    <div class="page" id="page-history">
+        <div class="page-head">
+            <div class="grow"><h1>History</h1><div class="sub">Your latest uploads with their links. Stored only on this computer, newest first, up to 500 entries.</div></div>
+            <button class="btn ghost" id="histClearBtn">Clear history</button>
+        </div>
+        <div class="toolbar"><svg class="ico" viewBox="0 0 24 24"><circle cx="11" cy="11" r="6.5"/><path d="M20 20l-4-4"/></svg><input type="search" id="histSearch" placeholder="Search file name, folder, client..." autocomplete="off"><span class="kbd">/</span></div>
+        <div class="filters" id="histFilters"></div>
+        <div id="histList"></div>
+        <div class="empty" id="histEmpty" style="display:none;">No uploads yet - the next one shows up here.</div>
+    </div>
+
+    <!-- ============ ACTIVITY ============ -->
+    <div class="page" id="page-activity">
+        <div class="page-head">
+            <div class="grow"><h1>Activity</h1><div class="sub">Sign-ins, tier checks and batch uploads - most recent first.</div></div>
+        </div>
+        <div class="card">
+            <ul class="events" id="eventsList"></ul>
+            <div class="empty" id="eventsEmpty" style="display:none;">Nothing logged yet.</div>
+        </div>
+    </div>
+
+    <!-- ============ TEMPLATES ============ -->
+    <div class="page" id="page-templates">
+        <div class="page-head">
+            <div class="grow"><h1>Templates</h1><div class="sub">Text templates for the SPT tab in After Effects - each one is a composition inside an .aep file.</div></div>
+            <input type="file" id="tplFile" accept=".aep" style="display:none;">
+            <button class="btn" id="tplAddBtn">Add .aep file</button>
+        </div>
+
+        <div class="card" id="tplLocked" style="display:none;">
+            <h2>The Thumbnail Pack</h2>
+            <p class="desc">Ready-made templates, animation presets and Premiere Pro templates are downloaded automatically for accounts that have the Thumbnail Pack. They are not part of the installer.</p>
+            <div class="actions" style="margin-top:6px;"><a class="btn" href="https://spidxshop.com/#editions" target="_blank" rel="noopener noreferrer">Get the Thumbnail Pack</a></div>
+        </div>
+
+        <div class="tpl-packrow" id="tplPackRow" style="display:none;">
+            <span id="tplPackLine"></span>
+            <button class="mini-btn" id="tplSyncBtn" type="button">Sync now</button>
+        </div>
+
+        <div class="note" id="tplNote" style="margin:0 0 12px;"></div>
+
+        <div class="tpl-grid" id="tplGrid"></div>
+        <div class="empty" id="tplEmpty" style="display:none;"><b>No templates yet</b>Add an .aep file, then tell the panel which composition and text layer to fill.</div>
+
+        <div class="card" id="tplForm" style="display:none;">
+            <div class="card-head"><h2 id="tplFormTitle">New template</h2></div>
+            <div class="field"><label for="tplFormFile">Project file</label><select id="tplFormFile" style="width:100%;"></select></div>
+            <div class="field"><label for="tplFormComp">Composition</label><p class="hint">The exact name of the composition inside the .aep file.</p><input type="text" id="tplFormComp" placeholder="e.g. IGN Clean"></div>
+            <div class="field"><label for="tplFormName">Name shown in the panel</label><input type="text" id="tplFormName" placeholder="e.g. IGN Clean - Eliminated"></div>
+            <div class="field"><label for="tplFormLayer">Text layer that gets the nick</label><p class="hint">The layer's name. If no layer has that name, the first text layer is used.</p><input type="text" id="tplFormLayer" placeholder="e.g. Nickname"></div>
+            <div class="actions" style="margin-top:6px;">
+                <button class="btn" id="tplFormSave">Save template</button>
+                <button class="btn ghost" id="tplFormCancel">Cancel</button>
+                <span class="note" id="tplFormNote" style="margin-top:0;"></span>
+            </div>
+        </div>
+
+        <div class="daylabel" style="margin-top:22px;">Project files</div>
+        <div id="tplFiles"></div>
+
+        <div class="daylabel" style="margin-top:22px;">Animation presets (.ffx)</div>
+        <div id="tplPresets"></div>
+    </div>
+
+    <!-- ============ SETTINGS ============ -->
+    <div class="page" id="page-settings">
+        <div class="page-head">
+            <div class="grow"><h1>Settings</h1><div class="sub">Changes are saved automatically - the helper restarts itself to apply them.</div></div>
+            <div class="note" id="saveStatus" style="margin:0;"></div>
+        </div>
+        <div class="toolbar"><svg class="ico" viewBox="0 0 24 24"><circle cx="11" cy="11" r="6.5"/><path d="M20 20l-4-4"/></svg><input type="search" id="setSearch" placeholder="Search settings..." autocomplete="off"><span class="kbd">/</span></div>
+        <div class="empty" id="setEmpty" style="display:none;">Nothing matches your search.</div>
+
+    <section class="set-fold open" data-fold="presets">
+        <button class="fold-head" type="button"><span class="ft"><b>Client presets</b><span>Destination, Drive folder, compression and Camera Raw in one click</span></span><svg class="chev" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></svg></button>
+        <div class="fold-body">
+            <div class="card" id="presetsCard">
+                <h2>Client presets</h2>
+                <p class="desc">One choice sets the destination, the Google Drive folder, image compression and the Camera Raw action. Set things up the way a client needs them, save that as a preset, then switch between clients here or from the Premiere Pro / After Effects panels.</p>
+                <div class="actions" style="margin-top: 0;">
+                    <input type="text" id="presetName" placeholder="Preset name, e.g. Client A" maxlength="60" style="max-width: 260px;">
+                    <button class="btn" id="presetSaveClientBtn">Save current setup as preset</button>
+                    <span class="note" id="presetsNote" style="margin-top: 0;"></span>
+                </div>
+                <div id="presetList" style="margin-top: 14px;"></div>
+                <div class="empty" id="presetsEmpty">No presets yet - save your current setup to create the first one.</div>
+            </div>
+        </div>
+    </section>
+
+        <div id="tourCardSettings">
+    <section class="set-fold open" data-fold="uploading">
+        <button class="fold-head" type="button"><span class="ft"><b>Uploading</b><span>Browser, notifications, retries, batches and throttling</span></span><svg class="chev" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></svg></button>
+        <div class="fold-body">
+            <div class="set-group" id="grpUploading">
+            <div class="set-block">
+            <div class="set-row">
+                <div class="txt"><b>Preferred browser</b><span>Used for WorkUpload uploads. Auto-detect follows your Windows default.</span></div>
+                <select id="preferredBrowser" data-default="auto">
+                    <option value="auto">Auto-detect</option>
+                    <option value="chrome">Chrome</option>
+                    <option value="edge">Edge</option>
+                    <option value="brave">Brave</option>
+                    <option value="firefox">Firefox</option>
+                    <option value="opera">Opera</option>
+                    <option value="opera-gx">Opera GX</option>
+                </select>
+            </div>
+            </div>
+            <div class="set-block">
+            <div class="set-row">
+                <div class="txt"><b>System notifications</b><span>Windows toast when an upload finishes.</span></div>
+                <label class="switch"><input type="checkbox" id="notificationsEnabled" data-default="1"><span class="track"></span></label>
+            </div>
+            </div>
+            <div class="set-block">
+            <div class="set-row">
+                <div class="txt"><b>Auto-retry failed uploads</b><span>Retries the whole batch when a send fails.</span></div>
+                <label class="switch"><input type="checkbox" id="autoRetryEnabled" data-default="0"><span class="track"></span></label>
+            </div>
+            <div class="set-row sub" data-dep="autoRetryEnabled">
+                <div class="txt"><b>Max attempts</b></div>
+                <input type="number" id="autoRetryMaxAttempts" min="1" max="10" data-default="3">
+            </div>
+            <div class="set-row sub" data-dep="autoRetryEnabled">
+                <div class="txt"><b>Delay between attempts (s)</b></div>
+                <input type="number" id="autoRetryDelaySeconds" min="0" max="600" data-default="10">
+            </div>
+            </div>
+            <div class="set-block">
+            <div class="set-row">
+                <div class="txt"><b>Batch collection timeout (s)</b><span>How long a partial batch waits before sending on its own.</span></div>
+                <input type="number" id="batchTimeoutSeconds" min="10" max="3600" data-default="120">
+            </div>
+            </div>
+            <div class="set-block">
+            <div class="set-row">
+                <div class="txt"><b>Throttle between requests</b><span>Small random delay before each upload.</span></div>
+                <label class="switch"><input type="checkbox" id="throttleEnabled" data-default="0"><span class="track"></span></label>
+            </div>
+            <div class="set-row sub" data-dep="throttleEnabled">
+                <div class="txt"><b>Min delay (ms)</b></div>
+                <input type="number" id="throttleMinMs" min="0" max="60000" data-default="500">
+            </div>
+            <div class="set-row sub" data-dep="throttleEnabled">
+                <div class="txt"><b>Max delay (ms)</b></div>
+                <input type="number" id="throttleMaxMs" min="0" max="60000" data-default="2000">
+            </div>
+            </div>
+            </div>
+        <div class="fold-foot"><button class="mini-btn" data-reset="grpUploading">Reset to defaults</button></div>
+        </div>
+    </section>
+    <section class="set-fold" data-fold="images">
+        <button class="fold-head" type="button"><span class="ft"><b>Images &amp; compression</b><span>Keep stills under the size limit before they are sent</span></span><svg class="chev" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></svg></button>
+        <div class="fold-body">
+            <div class="set-group" id="grpImages">
+            <div class="set-block">
+            <div class="set-row">
+                <div class="txt"><b>Compress images before upload</b><span>Stills bigger than the target are re-encoded as JPEG to fit it. Video is never touched.</span></div>
+                <label class="switch"><input type="checkbox" id="compressionEnabled" data-default="1"><span class="track"></span></label>
+            </div>
+            <div class="set-row sub" data-dep="compressionEnabled">
+                <div class="txt"><b>Target size (MB)</b></div>
+                <input type="number" id="compressionTargetMB" min="0.3" max="25" step="0.1" data-default="1.5">
+            </div>
+            </div>
+            </div>
+        <div class="fold-foot"><button class="mini-btn" data-reset="grpImages">Reset to defaults</button></div>
+        </div>
+    </section>
+    <section class="set-fold" data-fold="housekeeping">
+        <button class="fold-head" type="button"><span class="ft"><b>Housekeeping</b><span>Clean-up and RAM saving</span></span><svg class="chev" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></svg></button>
+        <div class="fold-body">
+            <div class="set-group" id="grpHouse">
+            <div class="set-block">
+            <div class="set-row">
+                <div class="txt"><b>Auto-clean old incoming files</b><span>Deletes already-handled exports from the incoming folder.</span></div>
+                <label class="switch"><input type="checkbox" id="cleanupEnabled" data-default="0"><span class="track"></span></label>
+            </div>
+            <div class="set-row sub" data-dep="cleanupEnabled">
+                <div class="txt"><b>After how many days</b></div>
+                <input type="number" id="cleanupAfterDays" min="1" max="365" data-default="7">
+            </div>
+            </div>
+            <div class="set-block">
+            <div class="set-row">
+                <div class="txt"><b>Close idle upload tab</b><span>Frees RAM by closing the automation browser between uploads.</span></div>
+                <label class="switch"><input type="checkbox" id="browserIdleEnabled" data-default="0"><span class="track"></span></label>
+            </div>
+            <div class="set-row sub" data-dep="browserIdleEnabled">
+                <div class="txt"><b>Idle timeout (s)</b></div>
+                <input type="number" id="browserIdleTimeoutSeconds" min="30" max="3600" data-default="120">
+            </div>
+            </div>
+            </div>
+        <div class="fold-foot"><button class="mini-btn" data-reset="grpHouse">Reset to defaults</button></div>
+        </div>
+    </section>
+        </div>
+
+    <section class="set-fold" data-fold="hotkey">
+        <button class="fold-head" type="button"><span class="ft"><b>Global shortcut</b><span>Send the current frame from After Effects, Premiere, Photoshop or VEGAS</span></span><svg class="chev" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></svg></button>
+        <div class="fold-body">
+            <div class="card" id="hotkeyCard">
+                <h2>Global shortcut</h2>
+                <p class="desc">Press a shortcut while After Effects, Premiere Pro, Photoshop or VEGAS Pro is in front and the current frame is sent - exactly like clicking Upload in the Spidx panel there. The panel only has to be open in that program (Window &gt; Extensions). Free for everyone.</p>
+                <div class="set-group">
+                    <div class="set-row">
+                        <div class="txt"><b>Enable the global shortcut</b><span>Works while the Spidx tray app is running.</span></div>
+                        <label class="switch"><input type="checkbox" id="hotkeyEnabled"><span class="track"></span></label>
+                    </div>
+                    <div class="set-row sub" data-dep="hotkeyEnabled">
+                        <div class="txt"><b>Upload</b><span>Click the box, then press the keys. Needs Ctrl, Alt, Shift or Win plus one key.</span></div>
+                        <input type="text" id="hotkeySend" readonly style="max-width: 190px; text-align: center; cursor: pointer;">
+                    </div>
+                    <div class="set-row sub" data-dep="hotkeyEnabled">
+                        <div class="txt"><b>Photoshop + Upload</b><span>The Camera Raw route (a Pro feature, needs an Action set in the Dashboard).</span></div>
+                        <input type="text" id="hotkeySendPs" readonly style="max-width: 190px; text-align: center; cursor: pointer;">
+                    </div>
+                </div>
+                <div class="savebar">
+                    <button class="btn" id="hotkeySaveBtn">Save shortcut</button>
+                    <button class="btn ghost" id="hotkeyResetBtn">Reset to default</button>
+                    <span class="note" id="hotkeyNote" style="margin-top: 0;"></span>
+                </div>
+                <div class="note" id="hotkeyStatus" style="margin-top: 10px;"></div>
+            </div>
+        </div>
+    </section>
+
+    <section class="set-fold" data-fold="language">
+        <button class="fold-head" type="button"><span class="ft"><b>Language</b><span>Dashboard, tray and setup wizard</span></span><svg class="chev" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></svg></button>
+        <div class="fold-body">
+            <div class="card" id="languageCard">
+                <h2>Language</h2>
+                <p class="desc">Choose the language of Spidx Uploader. "Automatic" follows your Windows display language. Changing it only reloads this page - the helper keeps running.</p>
+                <select id="langSelect" data-no-i18n style="width: 260px; max-width: 100%;"></select>
+                <div class="note" id="langNote"></div>
+            </div>
+        </div>
+    </section>
+
+        <button class="btn sr-only" id="saveSettingsBtn" tabindex="-1" aria-hidden="true" type="button">Save settings</button>
+    </div>
+
+    <!-- ============ STATUS ============ -->
+    <div class="page" id="page-status">
+        <div class="page-head">
+            <div class="grow"><h1>Status</h1><div class="sub">Everything that has to work for an upload to go through.</div></div>
+            <button class="btn ghost" id="copyReportBtn">Copy report</button>
+        </div>
+        <div class="card">
+            <div class="health" id="healthGrid"></div>
+            <div class="note" id="reportNote"></div>
+        </div>
+
+        <div class="card" id="tourCardPlugins">
+            <h2>Plugins</h2>
+            <p class="desc">Install, update or remove the After Effects / Premiere Pro panels and the VEGAS Pro plugin. The host app must be closed first - a console window (with an admin prompt) does the actual copy; for VEGAS it also builds the plugin for your VEGAS version.</p>
+            <div class="field" id="pluginRowAe">
+                <label>After Effects panel - <span id="pluginStatusAe">-</span></label>
+                <div class="actions" style="margin-top:6px;">
+                    <button class="btn" id="installAeBtn">Install</button>
+                    <button class="btn danger" id="uninstallAeBtn" disabled>Uninstall</button>
+                </div>
+            </div>
+            <div class="field" id="pluginRowPpro">
+                <label>Premiere Pro panel - <span id="pluginStatusPpro">-</span></label>
+                <div class="actions" style="margin-top:6px;">
+                    <button class="btn" id="installPproBtn">Install</button>
+                    <button class="btn danger" id="uninstallPproBtn" disabled>Uninstall</button>
+                </div>
+            </div>
+            <div class="field" id="pluginRowVegas">
+                <label>VEGAS Pro plugin - <span id="pluginStatusVegas">-</span></label>
+                <div class="actions" style="margin-top:6px;">
+                    <button class="btn" id="installVegasBtn">Install</button>
+                    <button class="btn danger" id="uninstallVegasBtn" disabled>Uninstall</button>
+                </div>
+            </div>
+            <div class="field" id="pluginRowPs">
+                <label>Photoshop panel - <span id="pluginStatusPs">-</span></label>
+                <div class="actions" style="margin-top:6px;">
+                    <button class="btn" id="installPsBtn">Install</button>
+                    <button class="btn danger" id="uninstallPsBtn" disabled>Uninstall</button>
+                    <button class="btn ghost" id="refreshPsStatusBtn">Refresh status</button>
+                </div>
+            </div>
+            <div class="field" id="pluginUpdatesRow">
+                <label>Plugin updates - <span id="pluginUpdatesStatus">-</span></label>
+                <div class="actions" style="margin-top:6px;">
+                    <button class="btn ghost" id="checkPluginUpdatesBtn">Check for plugin updates</button>
+                    <button class="btn" id="downloadPluginUpdatesBtn" style="display:none;">Download updates</button>
+                </div>
+            </div>
+            <div class="note" id="pluginNote"></div>
+        </div>
+
+        <div class="card" id="tourCardDiagnostics">
+            <h2>Diagnostics</h2>
+            <p class="desc">Something not working? Run the self-test to see exactly what is wrong, or create a diagnostics file to send to support. Emails, user names in paths, tokens and secrets are removed from it.</p>
+            <div class="actions" style="margin-top: 0;">
+                <button class="btn" id="selfTestBtn">Run self-test</button>
+                <button class="btn ghost" id="makeDiagBtn">Create diagnostics file</button>
+                <span class="note" id="diagNote" style="margin-top:0;"></span>
+            </div>
+            <div id="selfTestResults" style="margin-top: 12px;"></div>
+        </div>
+    </div>
+
+    <!-- ============ ACCOUNT ============ -->
+    <div class="page" id="page-account">
+        <div class="page-head">
+            <div class="grow"><h1>Account</h1><div class="sub">License, devices, updates and support.</div></div>
+        </div>
+
+        <div class="card">
+            <h2>License</h2>
+            <p class="desc" id="licenseSummary">Checking your license...</p>
+            <div class="actions" style="margin-top: 0;">
+                <button class="btn ghost" id="forceRefreshBtn">Force refresh tier</button>
+                <button class="btn danger" id="logoutBtn">Log out</button>
+                <span class="note" id="forceRefreshNote" style="margin-top:0;"></span>
+                <span class="note" id="logoutNote" style="margin-top:0;"></span>
+            </div>
+        </div>
+
+        <div class="card">
+            <h2>Enter a license code</h2>
+            <p class="desc">Got a code with your purchase or from an invite? Enter it to unlock Pro. It's tied to your signed-in Google account, and the helper restarts itself to pick up the new tier.</p>
+            <div class="inline">
+                <input type="text" id="licenseCodeInput" placeholder="e.g. PRO-XXXX-XXXX" style="text-transform: uppercase;" autocomplete="off" spellcheck="false">
+                <button class="btn" id="licenseRedeemBtn">Activate</button>
+            </div>
+            <div class="note" id="licenseNote"></div>
+        </div>
+
+        <div class="card">
+            <h2>Devices</h2>
+            <p class="desc" id="devicesDesc">Each paid license works on up to 2 computers. Remove one you no longer use to free its slot.</p>
+            <div id="deviceList"><p class="hint" style="margin:0;">Loading...</p></div>
+            <div class="actions" style="margin-top: 8px;">
+                <button class="btn ghost" id="devicesRefreshBtn">Refresh list</button>
+                <span class="note" id="devicesNote" style="margin-top:0;"></span>
+            </div>
+        </div>
+
+        <div class="card">
+            <h2>App updates</h2>
+            <p class="desc" id="appVersionLine">-</p>
+            <div class="actions" style="margin-top: 0;">
+                <button class="btn ghost" id="checkUpdateBtn">Check for updates</button>
+                <button class="btn" id="installUpdateBtn" style="display:none;">Install update</button>
+                <button class="btn ghost" id="openUpdaterBtn">Open the updater</button>
+                <button class="btn ghost" id="openReleaseBtn" style="display:none;">Open release page</button>
+                <span class="note" id="updateNote" style="margin-top:0;"></span>
+            </div>
+        </div>
+
+        <div class="card">
+            <h2>Backup &amp; restore</h2>
+            <p class="desc">Backs up your destination, Camera Raw preset, and helper settings - not your Google sign-in (sign in again after restoring on a new machine).</p>
+            <div class="actions" style="margin-top: 0;">
+                <button class="btn ghost" id="backupBtn">Download backup</button>
+                <input type="file" id="restoreFile" accept="application/json" style="display:none;">
+                <button class="btn ghost" id="restoreBtn">Restore from file</button>
+                <span class="note" id="backupNote" style="margin-top:0;"></span>
+            </div>
+        </div>
+
+        <div class="card" id="legalCard">
+            <h2>Support &amp; legal</h2>
+            <p class="desc" id="supportLine">Questions or a bug to report? Write to <a href="mailto:{{SUPPORT_EMAIL}}?subject=Spidx%20Uploader%20support" id="supportLink">{{SUPPORT_EMAIL}}</a> <button type="button" class="btn ghost" id="copySupportBtn" style="margin-left: 6px;">Copy address</button> <span id="copySupportNote" style="color: var(--text-faint); font-size: 12px;"></span><br>Please attach a diagnostics file (Account &rarr; Diagnostics &rarr; Create diagnostics file) - it helps a lot.</p>
+            <p class="desc" style="margin-bottom: 0;">The Terms of Service say how Spidx Uploader may be used, the EULA is the software licence, and the Privacy Policy explains what is sent where (sign-in and license check, uploads, update checks) and what stays on your computer. Refunds and the Thumbnail Pack licence have their own pages.</p>
+            <p class="desc" id="consentLine" style="margin: 12px 0 0;"></p>
+            <div class="legal-row">
+                <a class="legal-link" id="termsLink" href="https://spidxuploader.com/terms" target="_blank" rel="noopener noreferrer">Terms of Service <span class="ext">&#8599;</span></a>
+                <a class="legal-link" id="eulaLink" href="https://spidxuploader.com/eula" target="_blank" rel="noopener noreferrer">EULA <span class="ext">&#8599;</span></a>
+                <a class="legal-link" id="privacyLink" href="https://spidxuploader.com/privacy" target="_blank" rel="noopener noreferrer">Privacy Policy <span class="ext">&#8599;</span></a>
+                <a class="legal-link" id="refundLink" href="https://spidxuploader.com/refund" target="_blank" rel="noopener noreferrer">Refunds <span class="ext">&#8599;</span></a>
+                <a class="legal-link" id="siteLink" href="https://spidxuploader.com/" target="_blank" rel="noopener noreferrer">spidxuploader.com <span class="ext">&#8599;</span></a>
+            </div>
+        </div>
+    </div>
+
+    <div class="legal-foot" id="legalFoot">
+        Spidx Uploader <span id="footVersion"></span> &middot;
+        <a href="https://spidxuploader.com/terms" target="_blank" rel="noopener noreferrer">Terms of Service</a> &middot;
+        <a href="https://spidxuploader.com/eula" target="_blank" rel="noopener noreferrer">EULA</a> &middot;
+        <a href="https://spidxuploader.com/privacy" target="_blank" rel="noopener noreferrer">Privacy Policy</a> &middot;
+        <a href="https://spidxuploader.com/" target="_blank" rel="noopener noreferrer">spidxuploader.com</a>
+    </div>
+
+    </div></main>
+</div>
+
+<!-- floating upload progress: visible on every page while a big upload runs -->
+<div class="card dock" id="uploadProgressCard" style="display:none;">
+    <h2>Upload in progress</h2>
+    <p class="desc" id="uploadProgressFile"></p>
+    <div style="height:8px;border-radius:99px;background:var(--line);overflow:hidden;margin:10px 0 6px;">
+        <div id="uploadProgressBar" style="height:100%;width:0%;background:var(--accent);transition:width .6s ease;"></div>
+    </div>
+    <p class="hint" id="uploadProgressText" style="margin:0 0 4px;"></p>
+    <div class="actions">
+        <button class="btn danger" id="uploadCancelBtn">Cancel upload</button>
+        <span class="note" id="uploadCancelNote" style="margin-top:0;"></span>
+    </div>
+</div>
+
+<div id="toast"></div>
+
+<script>/*__I18N__*/</script>
+<script>
+/*__CLIENT__*/
+</script>
+</body>
+</html>

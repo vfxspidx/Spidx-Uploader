@@ -1,7 +1,7 @@
 "use strict";
 
 /* ========================================================================
- *  Compression worker — runs in a Worker Thread so sharp's CPU-intensive
+ *  Compression worker - runs in a Worker Thread so sharp's CPU-intensive
  *  JPEG binary search doesn't block the main thread (Playwright browser
  *  navigation, queue processing, panel status polling all stay responsive
  *  during compression).

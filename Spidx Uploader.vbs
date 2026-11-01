@@ -1,4 +1,4 @@
-' Spidx Uploader — silent launcher.
+' Spidx Uploader - silent launcher.
 ' Double-click this to start the helper + tray icon in the background,
 ' with no console window at all. Look for the Spidx icon near the clock.
 '

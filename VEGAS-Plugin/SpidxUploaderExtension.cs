@@ -1,7 +1,7 @@
 /* ========================================================================
- *  Spidx Uploader — VEGAS Pro Application Extension
+ *  Spidx Uploader - VEGAS Pro Application Extension
  *
- *  Speaks the exact same protocol as the Photoshop/After Effects panels —
+ *  Speaks the exact same protocol as the Photoshop/After Effects panels -
  *  the same small files inside App\incoming that Spider Engine already
  *  reads/writes (.batch-config.json, .batch-status.json,
  *  .engine-status.json, .default-camera-raw-preset.json,
@@ -9,7 +9,7 @@
  *
  *  Visually, every color/radius/spacing/font-size constant below is taken
  *  straight from the AE panel's HTML (panel-ae.html: CSS custom
- *  properties --bg, --surface, --accent, etc., plus its px sizes) — not
+ *  properties --bg, --surface, --accent, etc., plus its px sizes) - not
  *  approximated. The layout is fluid: it fills whatever width the dock has. WinForms can't do everything CSS can (no native
  *  letter-spacing, no CSS gradients beyond what LinearGradientBrush
  *  covers), but colors, translucent rgba() backgrounds (GDI+ handles
@@ -24,15 +24,15 @@
  *
  *  BUILD: run build.bat next to this file (csc.exe, no Visual Studio
  *  needed). INSTALL: copy the resulting SpidxUploader.dll into VEGAS's
- *  "Application Extensions" folder and restart VEGAS — see README.txt.
+ *  "Application Extensions" folder and restart VEGAS - see README.txt.
  *
  *  ------------------------------------------------------------------
  *  Same honesty note as always: written against VEGAS's published
  *  Application Extension API and the real CEP-AE CSS/JS as reference,
  *  but never compiled or run inside a real VEGAS install here. Every
- *  round so far has needed one real fix after an actual compile/run —
+ *  round so far has needed one real fix after an actual compile/run -
  *  expect that pattern to continue; paste back the exact error (or, for
- *  runtime issues, whatever the "Spidx Uploader — diagnostic" dialog
+ *  runtime issues, whatever the "Spidx Uploader - diagnostic" dialog
  *  shows) rather than describing the symptom only.
  *  ------------------------------------------------------------------
  * ==================================================================== */
@@ -48,15 +48,15 @@ using System.Net;
 using System.Runtime.InteropServices;
 using System.Web.Script.Serialization;
 using System.Windows.Forms;
-using ScriptPortal.Vegas; // VEGAS Pro 23 confirmed — older installs may need `using Sony.Vegas;` instead
+using ScriptPortal.Vegas; // VEGAS Pro 23 confirmed - older installs may need `using Sony.Vegas;` instead
 
 public class SpidxUploaderModule : ICustomCommandModule
 {
     /* ------------------------------------------------------------------ */
-    /*  Protocol constants — must match server.js / client/index.js       */
+    /*  Protocol constants - must match server.js / client/index.js       */
     /* ------------------------------------------------------------------ */
     // Vegas's own status bar shows this key for whichever dock view has
-    // focus — it's not just an internal identifier, it's user-visible, so
+    // focus - it's not just an internal identifier, it's user-visible, so
     // it needs to read like a name, not a .NET class name.
     private const string DockViewName = "Spidx Uploader";
     private const string OwnConfigFileName = "vegas-panel-config.json";
@@ -70,12 +70,26 @@ public class SpidxUploaderModule : ICustomCommandModule
     private const long EngineStaleMs = 2 * 60 * 1000;
     private static readonly string[] MultiBatchTiers = { "pro", "dev", "tester" };
 
-    // VEGAS Pro uploads are a Pro feature. The panel locks its buttons for a known
-    // non-Pro plan, AND every file is tagged ".vg" so the helper (engine) refuses it
-    // for a non-Pro licence even if this check is bypassed.
-    private static readonly string[] ProTiers = { "pro", "dev", "tester" };
+    // Since 3.0 VEGAS Pro is available on every plan. The free plan has a monthly allowance of
+    // "Render & upload" videos instead; the helper counts them and publishes the numbers in
+    // .engine-status.json ("renders"), this panel only reads them to warn before a render.
+    private long myRenderLimit = -1;     // -1 = unlimited (or not known yet)
+    private long myRendersUsed = 0;
 
     private Vegas myVegas;
+
+    // Render video (SE 3): templates come from VEGAS itself, the user picks one.
+    private SpidxLabel myRenderLabel;
+    private SpidxSelect myRenderTemplate;
+    private SpidxSelect myRenderRange;
+    private SpidxButton myRenderButton;
+    private SpidxLabel myRenderNote;
+    private Panel myRenderRow;
+    private readonly List<Renderer> myRenderRenderers = new List<Renderer>();
+    private readonly List<RenderTemplate> myRenderTemplates = new List<RenderTemplate>();
+    private string myRenderTemplateSaved = "";
+    private double myPanelScaleOverride;     // 0 = follow the screen's scaling
+    private int myRenderRangeSaved = 0;
     private CustomCommand myViewCommand;
     private Timer myPollTimer;
     private string myIncomingFolder;
@@ -137,7 +151,7 @@ public class SpidxUploaderModule : ICustomCommandModule
     private SpidxButton myLbCopyBtn;
     private SpidxLabel myLbMessage;
 
-    /* State — mirrors client/index.js's module-level vars */
+    /* State - mirrors client/index.js's module-level vars */
     private int mySelectedBatchCount = 1;
     private string myFolderNameValue = "";
     private string myCurrentTier;
@@ -147,7 +161,7 @@ public class SpidxUploaderModule : ICustomCommandModule
     private bool myBusy;
     private bool? myEngineOnline;
 
-    /* Leaderboard state — mirrors client/index.js's lb* vars */
+    /* Leaderboard state - mirrors client/index.js's lb* vars */
     private const string LbApiHost = "http://169.58.221.14:8080";
     private const string LbCacheName = ".leaderboard-cache.json";
     private List<Dictionary<string, object>> myLbPlayers = new List<Dictionary<string, object>>();
@@ -204,11 +218,11 @@ public class SpidxUploaderModule : ICustomCommandModule
             "Spidx Uploader hit an error in: " + where + "\n\n"
             + ex.GetType().FullName + ": " + ex.Message + "\n\n"
             + "Stack trace:\n" + ex.StackTrace,
-            "Spidx Uploader — diagnostic", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            "Spidx Uploader - diagnostic", MessageBoxButtons.OK, MessageBoxIcon.Error);
     }
 
     /* ------------------------------------------------------------------ *
-     *  Panel construction — layout order, sizes and margins follow the
+     *  Panel construction - layout order, sizes and margins follow the
      *  AE panel's HTML/CSS (panel-ae.html):
      *    .panel (padding 12/13/16) > .hdr, .tabs, .tab-page#tabUploader
      *    (.warn-box, .card, .prog-track, .label+.seg, .hidden-row,
@@ -226,6 +240,7 @@ public class SpidxUploaderModule : ICustomCommandModule
         if (myVegas.ActivateDockView(DockViewName)) return;
 
         LoadPanelConfig();
+        if (!string.IsNullOrEmpty(myIncomingFolder)) Sx.LoadI18n(Path.Combine(myIncomingFolder, ".panel-i18n.json"));
 
         DockableControl dockView = new DockableControl(DockViewName);
         dockView.PersistDockWindowState = true;
@@ -256,6 +271,7 @@ public class SpidxUploaderModule : ICustomCommandModule
         root.Controls.Add(stack);
         dockView.Controls.Add(root);
         root.SizeChanged += (s, e) => ApplyWidth();
+        root.ClientSizeChanged += (s, e) => ApplyWidth();     // a vertical scrollbar appearing narrows the usable width
         myVegas.LoadDockView(dockView);
 
         UpdateFolderLabel();
@@ -337,20 +353,63 @@ public class SpidxUploaderModule : ICustomCommandModule
         return myHeaderRow;
     }
 
+    // The largest title size (13 down to 11px) that fits in the given width; -1 when even the smallest does not.
+    private static float FitTitlePx(string text, int avail)
+    {
+        float[] sizes = { 13f, 12f, 11.5f, 11f };
+        for (int i = 0; i < sizes.Length; i++)
+        {
+            if (TitleWidth(text, sizes[i]) <= avail) return sizes[i];
+        }
+        return -1f;
+    }
+
+    private static int TitleWidth(string text, float px)
+    {
+        return TextRenderer.MeasureText(text, Sx.Fnt(px, 600), new Size(100000, 100),
+            TextFormatFlags.NoPadding | TextFormatFlags.SingleLine).Width + S(4);
+    }
+
     private void LayoutHeader()
     {
         myHeaderRow.Size = new Size(myW, S(22));
         myMark.Location = new Point(0, 0);
+        int titleX = S(22) + S(7);
+        string title = myTitleLabel.Text;
+
+        // 1) The badge: the full text ("TESTER (5D)") while the title still fits beside it, else the tier name only.
+        myTierBadge.Compact = false;
         int badgeW = myTierBadge.Visible ? myTierBadge.PreferredWidth() : 0;
+        if (badgeW > 0 && myW - titleX - (badgeW + S(7)) < TitleWidth(title, 13f))
+        {
+            myTierBadge.Compact = true;
+            badgeW = myTierBadge.PreferredWidth();
+        }
+
+        // 2) The title: 13px, a little smaller in a narrow dock. In a VERY narrow one the little "S" square steps
+        //    aside so the name is never cut off.
+        int titleAvail = Math.Max(20, myW - titleX - (badgeW > 0 ? badgeW + S(7) : 0));
+        float px = FitTitlePx(title, titleAvail);
+        bool showMark = true;
+        if (px < 0f)
+        {
+            showMark = false;
+            titleX = 0;
+            titleAvail = Math.Max(20, myW - (badgeW > 0 ? badgeW + S(7) : 0));
+            px = FitTitlePx(title, titleAvail);
+            if (px < 0f) px = 11f;
+        }
+        myMark.Visible = showMark;
+        if (Math.Abs(myTitleLabel.FontPx - px) > 0.01f) myTitleLabel.SetFont(px, 600);
+
         if (myTierBadge.Visible)
         {
             myTierBadge.Size = new Size(badgeW, S(18));
             myTierBadge.Location = new Point(myW - badgeW, S(2));
+            myTierBadge.Invalidate();
         }
-        int titleX = S(22) + S(7);
-        int titleW = Math.Max(20, myW - titleX - (badgeW > 0 ? badgeW + S(7) : 0));
         int th = myTitleLabel.LineHeight();
-        myTitleLabel.SetBounds(titleX, Math.Max(0, (S(22) - th) / 2), titleW, th);
+        myTitleLabel.SetBounds(titleX, Math.Max(0, (S(22) - th) / 2), titleAvail, th);
     }
 
     /* -- .tabs: Uploader / Leaderboard, gap 6, margin-bottom 12 -- */
@@ -407,7 +466,7 @@ public class SpidxUploaderModule : ICustomCommandModule
         page.Controls.Add(BuildWarnBox());
         page.Controls.Add(BuildStatusCard());
 
-        // .prog-track { margin: 10px 0 8px } — the 8px collapses into .label's 14px top margin
+        // .prog-track { margin: 10px 0 8px } - the 8px collapses into .label's 14px top margin
         myProgressBar = new SpidxProgressBar { Height = S(5), Margin = M(10, 0) };
         page.Controls.Add(myProgressBar);
 
@@ -416,6 +475,7 @@ public class SpidxUploaderModule : ICustomCommandModule
         page.Controls.Add(BuildBatchRow());
         page.Controls.Add(BuildFolderNameRow());
         page.Controls.Add(BuildSendButtons());
+        page.Controls.Add(BuildRenderBlock());
         page.Controls.Add(BuildFileRow());
         page.Controls.Add(BuildBatchProgressPanel());
         page.Controls.Add(BuildFooter());
@@ -434,7 +494,7 @@ public class SpidxUploaderModule : ICustomCommandModule
         myProgressBar.Width = myW;
         myFilesLabel.Size = new Size(myW, myFilesLabel.LineHeight());
 
-        // .seg — 3 equal buttons, gap 6
+        // .seg - 3 equal buttons, gap 6
         int segH = S(31);
         myBatchRow.Size = new Size(myW, segH);
         int segW = (myW - 2 * S(6)) / 3;
@@ -452,7 +512,7 @@ public class SpidxUploaderModule : ICustomCommandModule
         myFolderNameInput.SetBounds(0, inputY, myW, S(30));
         myFolderNameRow.Size = new Size(myW, inputY + S(30));
 
-        // .btn-row — two buttons, gap 8
+        // .btn-row - two buttons, gap 8
         int btnH = S(42);
         mySendRow.Size = new Size(myW, btnH);
         int bw = (myW - S(8)) / 2;
@@ -461,6 +521,15 @@ public class SpidxUploaderModule : ICustomCommandModule
 
         myRouteLineLabel.Width = myW;
         myRouteLineLabel.Refit();
+
+        // Render video block
+        myRenderLabel.Size = new Size(myW, myRenderLabel.LineHeight());
+        myRenderTemplate.Width = myW;
+        myRenderRange.Width = myW;
+        myRenderRow.Size = new Size(myW, S(42));
+        myRenderButton.SetBounds(0, 0, myW, S(42));
+        myRenderNote.Width = myW;
+        myRenderNote.Refit();
 
         // .file-row
         int rowH = S(50);
@@ -588,7 +657,7 @@ public class SpidxUploaderModule : ICustomCommandModule
         myWarnBox = new SpidxCard(CardKind.Warn) { Radius = 9, Visible = false, Margin = M(0, 10) };
         myWarnText = new SpidxLabel
         {
-            Text = "Device limit reached \u2014 this computer counts as a 3rd device on a paid tier, so it runs as Free here.",
+            Text = "Device limit reached - this computer counts as a 3rd device on a paid tier, so it runs as Free here.",
             ForeColor = Sx.WarnText
         };
         myWarnText.SetFont(10.5f, 400);
@@ -683,15 +752,226 @@ public class SpidxUploaderModule : ICustomCommandModule
         return group;
     }
 
+    /* -- Render video: pick a VEGAS render template, render into App\incoming, the helper uploads it -- */
+    private Control BuildRenderBlock()
+    {
+        FlowLayoutPanel group = NewPage();
+        group.Margin = M(18, 0);
+
+        myRenderLabel = BuildSectionLabel("RENDER VIDEO", M(0, 6));
+        myRenderTemplate = new SpidxSelect { Margin = M(0, 6) };
+        myRenderTemplate.Host = myRoot;
+        myRenderRange = new SpidxSelect { Margin = M(0, 8) };
+        myRenderRange.Host = myRoot;
+        myRenderRange.SetItems("Entire project", "Loop region");
+        myRenderRange.SelectedIndex = (myRenderRangeSaved == 1) ? 1 : 0;
+        myRenderRange.SelectedIndexChanged += (s, e) => { myRenderRangeSaved = myRenderRange.SelectedIndex; SavePanelConfig(); };
+
+        FillRenderTemplates();
+        myRenderTemplate.SelectedIndexChanged += (s, e) =>
+        {
+            int i = myRenderTemplate.SelectedIndex;
+            if (i >= 0 && i < myRenderTemplates.Count) { myRenderTemplateSaved = myRenderTemplates[i].Name ?? ""; SavePanelConfig(); }
+        };
+
+        myRenderRow = NewRow(M(0, 0));
+        myRenderButton = new SpidxButton { Text = "Render & upload", Kind = SpidxBtnKind.Primary };
+        myRenderButton.Click += (s, e) => PerformRender();
+        myRenderRow.Controls.Add(myRenderButton);
+
+        myRenderNote = new SpidxLabel { Text = "VEGAS renders with the template you choose (no extra compression), then the helper uploads the file.", AutoFit = true, Margin = M(6, 0) };
+        myRenderNote.SetFont(10.5f, 400);
+
+        group.Controls.Add(myRenderLabel);
+        group.Controls.Add(myRenderTemplate);
+        group.Controls.Add(myRenderRange);
+        group.Controls.Add(myRenderRow);
+        group.Controls.Add(myRenderNote);
+        return group;
+    }
+
+    // Lists every render template VEGAS knows: "File type - Template name".
+    private void FillRenderTemplates()
+    {
+        myRenderRenderers.Clear();
+        myRenderTemplates.Clear();
+        List<string> labels = new List<string>();
+        try
+        {
+            foreach (Renderer r in myVegas.Renderers)
+            {
+                foreach (RenderTemplate t in r.Templates)
+                {
+                    if (t == null || string.IsNullOrEmpty(t.Name)) continue;
+                    myRenderRenderers.Add(r);
+                    myRenderTemplates.Add(t);
+                    labels.Add(r.FileTypeName + " - " + t.Name);
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            ShowDiagnostic("FillRenderTemplates (reading the VEGAS render templates)", ex);
+        }
+        if (labels.Count == 0) labels.Add("(no render templates found)");
+        myRenderTemplate.SetItems(labels.ToArray());
+        int pick = 0;
+        for (int i = 0; i < myRenderTemplates.Count; i++)
+            if (myRenderTemplates[i].Name == myRenderTemplateSaved) { pick = i; break; }
+        myRenderTemplate.SelectedIndex = pick;
+    }
+
+    private static string RenderExtension(Renderer r)
+    {
+        try
+        {
+            string[] exts = r.FileExtensions;
+            if (exts != null && exts.Length > 0 && !string.IsNullOrEmpty(exts[0]))
+            {
+                string e = exts[0].Trim().TrimStart('*').TrimStart('.');
+                if (e.Length > 0 && e.Length <= 5) return e.ToLowerInvariant();
+            }
+        }
+        catch { }
+        return "mp4";
+    }
+
+    // Batches ("Files per upload" 2 or 3) are for thumbnails only. While one is selected or being collected, rendering a
+    // video is blocked: a render is a single upload of its own and must not get mixed up with a batch of stills.
+    private bool RenderBlockedByBatch()
+    {
+        return mySelectedBatchCount > 1 || myLastBatchState == "collecting";
+    }
+
+    private void UpdateRenderBatchLock()
+    {
+        if (myRenderButton == null || myRenderNote == null) return;
+        bool blocked = RenderBlockedByBatch();
+        if (!myBusy) myRenderButton.Enabled = !blocked;
+        string normal = "VEGAS renders with the template you choose (no extra compression), then the helper uploads the file.";
+        string note = "Batches are for thumbnails. Set Files per upload to 1 to render a video.";
+        myRenderNote.Text = blocked ? note : normal;
+        myRenderNote.Width = myW;
+        myRenderNote.Refit();
+    }
+
+    private void PerformRender()
+    {
+        if (myBusy) return;
+        if (RenderBlockedByBatch()) { SetCard("Batches are for thumbnails", "Set Files per upload to 1 to render a video.", CardState.Error); return; }
+        if (PlanLocked()) { ApplyPlanLock(); return; }
+        if (myRenderLimit >= 0 && myRendersUsed >= myRenderLimit)
+        {
+            SetCard("Render limit reached", "The free plan includes " + myRenderLimit + " video renders per month. Pro has unlimited renders.", CardState.Error);
+            return;
+        }
+
+        int idx = myRenderTemplate.SelectedIndex;
+        if (idx < 0 || idx >= myRenderTemplates.Count)
+        {
+            SetCard("No render template", "VEGAS did not list any render templates.", CardState.Error);
+            return;
+        }
+
+        myBusy = true;
+        myRenderButton.Enabled = false;
+        mySendButton.Enabled = false;
+        myPsUploadButton.Enabled = false;
+        myRenderButton.Text = "Rendering...";
+        HideFileRow();
+        string tmpPath = null;
+
+        try
+        {
+            string folder = EnsureIncomingFolder();
+            WriteBatchConfig();
+
+            Renderer renderer = myRenderRenderers[idx];
+            RenderTemplate template = myRenderTemplates[idx];
+            string ext = RenderExtension(renderer);
+
+            // Render into a hidden sub-folder first, then move it in: the helper must
+            // never see a half-written video.  ".vg" tags the file as VEGAS-made (Pro only).
+            string stamp = "spidx_" + DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+            string tmpDir = Path.Combine(folder, ".render-tmp");
+            Directory.CreateDirectory(tmpDir);
+            tmpPath = Path.Combine(tmpDir, stamp + "." + ext);
+            string finalName = stamp + ".vg." + ext;
+            string finalPath = Path.Combine(folder, finalName);
+
+            Timecode start = Timecode.FromMilliseconds(0);
+            Timecode length = myVegas.Project.Length;
+            if (myRenderRange.SelectedIndex == 1)
+            {
+                start = myVegas.Transport.LoopRegionStart;
+                length = myVegas.Transport.LoopRegionLength;
+            }
+            if (length.ToMilliseconds() <= 0)
+                throw new Exception("Nothing to render - the project (or loop region) is empty.");
+
+            SetCard("Rendering...", "VEGAS is rendering with \"" + template.Name + "\". Keep VEGAS open.", CardState.Normal);
+            myProgressBar.SetPercent(20, false);
+            myRenderButton.Refresh();
+
+            RenderArgs args = new RenderArgs();
+            args.OutputFile = tmpPath;
+            args.RenderTemplate = template;
+            args.Start = start;
+            args.Length = length;
+
+            RenderStatus status = myVegas.Render(args);
+            if (status != RenderStatus.Complete)
+                throw new Exception("Render did not finish (status: " + status + ").");
+            if (!File.Exists(tmpPath) || new FileInfo(tmpPath).Length == 0)
+                throw new Exception("VEGAS reported success but no file was written.");
+
+            File.Move(tmpPath, finalPath);
+            tmpPath = null;
+            long bytes = new FileInfo(finalPath).Length;
+
+            myProgressBar.SetPercent(100, true);
+            myFileThumb.Configure(ext.ToUpperInvariant(), Sx.SurfaceAlt, Sx.Dim);
+            myFileName.Text = finalName.Replace(".vg.", ".");
+            myFileSize.Text = FormatBytes(bytes);
+            myFileRow.Visible = true;
+            SetCard("Render done", "The helper is uploading the video now - watch progress in the Dashboard.", CardState.Ok);
+            myRenderButton.Text = "Done";
+        }
+        catch (Exception ex)
+        {
+            SetCard("Render failed", ex.Message, CardState.Error);
+            myProgressBar.SetPercent(0, false);
+            myRenderButton.Text = "Try again";
+            ShowDiagnostic("PerformRender (rendering the video)", ex);
+        }
+        finally
+        {
+            try { if (tmpPath != null && File.Exists(tmpPath)) File.Delete(tmpPath); } catch { }
+            myBusy = false;
+            myRenderButton.Enabled = true;
+            mySendButton.Enabled = true;
+            UpdateRouteLine();
+
+            Timer resetTimer = new Timer { Interval = 2500 };
+            resetTimer.Tick += (s, e) =>
+            {
+                myRenderButton.Text = "Render & upload";
+                resetTimer.Stop();
+                resetTimer.Dispose();
+            };
+            resetTimer.Start();
+        }
+    }
+
     /* -- .file-row: last exported file (thumb 30px / name 11px/600 / size 10px), margin-top 12 -- */
     private Control BuildFileRow()
     {
         myFileRow = new SpidxCard(CardKind.Plain) { Radius = 10, Visible = false, Margin = M(12, 0) };
         myFileThumb = new SpidxBadge { Radius = 7, FontPx = 8.5f, Weight = 700, BackColor = Sx.Surface };
         myFileThumb.Configure("PNG", Sx.SurfaceAlt, Sx.Dim);
-        myFileName = new SpidxLabel { Text = "\u2014", ForeColor = Sx.Text, Wrap = false, Ellipsis = true };
+        myFileName = new SpidxLabel { Text = "-", ForeColor = Sx.Text, Wrap = false, Ellipsis = true };
         myFileName.SetFont(11f, 600);
-        myFileSize = new SpidxLabel { Text = "\u2014", ForeColor = Sx.Faint, Wrap = false };
+        myFileSize = new SpidxLabel { Text = "-", ForeColor = Sx.Faint, Wrap = false };
         myFileSize.SetFont(10f, 400);
         myFileRow.Controls.Add(myFileThumb);
         myFileRow.Controls.Add(myFileName);
@@ -774,7 +1054,7 @@ public class SpidxUploaderModule : ICustomCommandModule
         myLbPlayers = rawPlayers.Select(p => p as Dictionary<string, object>).Where(p => p != null).ToList();
         LbRenderRows();
         long savedAt = GetLong(cache, "savedAt");
-        myLbStatus.Text = "Offline \u2014 cached data from " + LbCacheAgeText(savedAt) + " (" + myLbPlayers.Count + " players) \u00b7 " + reasonWhyLive;
+        myLbStatus.Text = "Offline - cached data from " + LbCacheAgeText(savedAt) + " (" + myLbPlayers.Count + " players) \u00b7 " + reasonWhyLive;
         myLbStatus.ForeColor = Sx.Err;
     }
 
@@ -831,7 +1111,7 @@ public class SpidxUploaderModule : ICustomCommandModule
         myLbWebClient = new WebClient();
         // Without this, WebClient falls back to the system's ANSI code page
         // (e.g. Windows-1252) for any response that doesn't explicitly say
-        // "charset=utf-8" in its Content-Type header — which this API's
+        // "charset=utf-8" in its Content-Type header - which this API's
         // plain "application/json" doesn't. Every non-ASCII character in a
         // nickname then gets mis-decoded (mojibake like "95Ç", "bÄ¤...").
         myLbWebClient.Encoding = System.Text.Encoding.UTF8;
@@ -936,7 +1216,7 @@ public class SpidxUploaderModule : ICustomCommandModule
     }
 
     /* ------------------------------------------------------------------ *
-     *  Batch selector logic — mirrors client/index.js exactly.
+     *  Batch selector logic - mirrors client/index.js exactly.
      * ------------------------------------------------------------------ */
     private bool TierAllowsMultiBatch()
     {
@@ -947,7 +1227,7 @@ public class SpidxUploaderModule : ICustomCommandModule
     // unknown (helper not running yet) the frame may be saved - the helper decides.
     private bool PlanLocked()
     {
-        return myCurrentTier != null && !ProTiers.Contains(myCurrentTier);
+        return false;   // VEGAS Pro is on every plan since 3.0 (see the render allowance above)
     }
 
     private void ApplyPlanLock()
@@ -957,13 +1237,14 @@ public class SpidxUploaderModule : ICustomCommandModule
         {
             mySendButton.Enabled = false;
             myPsUploadButton.Enabled = false;
+            if (myRenderButton != null) myRenderButton.Enabled = false;
             SetCard("VEGAS Pro is a Pro feature",
                 "Your plan is " + myCurrentTier.ToUpperInvariant() + ". Upgrade to Pro to upload from VEGAS Pro.",
                 CardState.Error);
         }
         else
         {
-            if (!myBusy) mySendButton.Enabled = true;
+            if (!myBusy) { mySendButton.Enabled = true; if (myRenderButton != null) myRenderButton.Enabled = true; }
             UpdateRouteLine();
         }
     }
@@ -995,6 +1276,7 @@ public class SpidxUploaderModule : ICustomCommandModule
             myBatchButtons[i].Invalidate();
         }
         UpdateFolderNameVisibility();
+        UpdateRenderBatchLock();
         if (persist)
         {
             SavePanelConfig();
@@ -1065,7 +1347,7 @@ public class SpidxUploaderModule : ICustomCommandModule
     }
 
     /* ------------------------------------------------------------------ *
-     *  Upload — mirrors performUpload()/finishUpload() in client/index.js.
+     *  Upload - mirrors performUpload()/finishUpload() in client/index.js.
      * ------------------------------------------------------------------ */
     private void PerformUpload(bool viaPhotoshop)
     {
@@ -1094,7 +1376,7 @@ public class SpidxUploaderModule : ICustomCommandModule
 
             if (myEngineOnline == false)
             {
-                SetCard("Helper not running", "Saving the frame anyway — it uploads when the helper starts.", CardState.Error);
+                SetCard("Helper not running", "Saving the frame anyway - it uploads when the helper starts.", CardState.Error);
             }
 
             SetCard("Saving frame...", "Exporting the current frame as PNG.", CardState.Normal);
@@ -1109,7 +1391,7 @@ public class SpidxUploaderModule : ICustomCommandModule
 
             if (mySelectedBatchCount > 1)
             {
-                SetCard("Added to batch", "Waiting for the rest (" + mySelectedBatchCount + " total) — export the next one the same way.", CardState.Ok);
+                SetCard("Added to batch", "Waiting for the rest (" + mySelectedBatchCount + " total) - export the next one the same way.", CardState.Ok);
             }
             else
             {
@@ -1146,7 +1428,7 @@ public class SpidxUploaderModule : ICustomCommandModule
     private void SaveCurrentFrame(Vegas vegas, string incomingFolder, bool viaPhotoshop, out string finalName, out long bytes)
     {
         string stamp = "spidx_" + DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-        // ".vg" tags the file as coming from VEGAS (Pro only - see ProTiers); the helper
+        // ".vg" tags the file as coming from VEGAS (the history shows the source); the helper
         // strips it again before uploading, so the uploaded name stays clean.
         finalName = viaPhotoshop ? (stamp + ".vg.ps.png") : (stamp + ".vg.png");
         string partPath = Path.Combine(incomingFolder, stamp + ".pngpart");
@@ -1184,7 +1466,7 @@ public class SpidxUploaderModule : ICustomCommandModule
     }
 
     /* ------------------------------------------------------------------ *
-     *  Status polling — mirrors poll()/applyEngineStatus()/
+     *  Status polling - mirrors poll()/applyEngineStatus()/
      *  applyBatchStatus()/updateRouteLine() in client/index.js.
      * ------------------------------------------------------------------ */
     private void StartPolling()
@@ -1283,13 +1565,13 @@ public class SpidxUploaderModule : ICustomCommandModule
             if (!online)
             {
                 SetCard("Helper not running",
-                    "Start \"Spidx Uploader.vbs\" — nothing is watching the incoming folder right now.",
+                    "Start \"Spidx Uploader.vbs\" - nothing is watching the incoming folder right now.",
                     CardState.Error);
                 myProgressBar.SetPercent(0, false);
             }
             else if (!myBusy)
             {
-                SetCard("Ready", "Helper is running — send away.", CardState.Normal);
+                SetCard("Ready", "Helper is running - send away.", CardState.Normal);
             }
         }
 
@@ -1306,6 +1588,21 @@ public class SpidxUploaderModule : ICustomCommandModule
             if (!TierAllowsMultiBatch() && mySelectedBatchCount > 1) SetSelectedBatchCount(1, true);
             SetBatchControlsLocked(false);
             ApplyPlanLock();
+        }
+
+        // free plan: monthly allowance of Render & upload videos (no "limit" = unlimited)
+        myRenderLimit = -1;
+        myRendersUsed = 0;
+        object rendersObj;
+        if (status.TryGetValue("renders", out rendersObj))
+        {
+            Dictionary<string, object> renders = rendersObj as Dictionary<string, object>;
+            object limitObj;
+            if (renders != null && renders.TryGetValue("limit", out limitObj) && limitObj != null)
+            {
+                myRenderLimit = GetLong(renders, "limit");
+                myRendersUsed = GetLong(renders, "used");
+            }
         }
 
         if (!string.IsNullOrEmpty(tier))
@@ -1354,12 +1651,13 @@ public class SpidxUploaderModule : ICustomCommandModule
             myProgressBar.SetPercent(100, true);
             List<object> links = status != null ? GetList(status, "links") : null;
             bool hasLinks = links != null && links.Count > 0;
-            SetCard("Uploaded", hasLinks ? "Link copied to the clipboard." : "Sent — no link was detected.", CardState.Ok);
+            SetCard("Uploaded", hasLinks ? "Link copied to the clipboard." : "Sent - no link was detected.", CardState.Ok);
             SetSelectedBatchCount(1, true);
         }
 
         if (myLastBatchState == "uploading" && state != "uploading" && state != "done") myProgressBar.SetPercent(0, false);
         myLastBatchState = state;
+        UpdateRenderBatchLock();
     }
 
     private void UpdateRouteLine()
@@ -1371,7 +1669,7 @@ public class SpidxUploaderModule : ICustomCommandModule
 
         myPsUploadButton.Enabled = !myBusy && hasPreset && !PlanLocked();
         myRouteLineLabel.Text = hasPreset
-            ? "Photoshop + Upload runs \u201c" + actionName + "\u201d \u2014 requires Photoshop already open."
+            ? "Photoshop + Upload runs \u201c" + actionName + "\u201d - requires Photoshop already open."
             : "Set a Camera Raw Action in the Dashboard to enable Photoshop + Upload.";
     }
 
@@ -1391,7 +1689,7 @@ public class SpidxUploaderModule : ICustomCommandModule
     }
 
     /* ------------------------------------------------------------------ *
-     *  This extension's own settings — separate from the protocol files
+     *  This extension's own settings - separate from the protocol files
      *  above (those are Spider Engine's, shared with the other panels).
      * ------------------------------------------------------------------ */
     private string ConfigPath()
@@ -1403,17 +1701,27 @@ public class SpidxUploaderModule : ICustomCommandModule
 
     private void LoadPanelConfig()
     {
+        Sx.SetScale(Sx.DetectDpiScale());
         Dictionary<string, object> cfg = ReadJson(ConfigPath());
         if (cfg == null) return;
         myIncomingFolder = GetString(cfg, "incomingFolder");
         long savedCount = GetLong(cfg, "batchCount");
         mySelectedBatchCount = (savedCount == 2 || savedCount == 3) ? (int)savedCount : 1;
         myFolderNameValue = GetString(cfg, "folderName") ?? "";
+        myRenderTemplateSaved = GetString(cfg, "renderTemplate") ?? "";
+        myRenderRangeSaved = (int)GetLong(cfg, "renderRange");
+        // "panelScale" is a manual override (e.g. 0.9 or 1.2); it is never written by the panel itself. The old "uiScale"
+        // key was saved automatically (always 1.3), so it is ignored.
         object scaleObj;
         double scale;
-        if (cfg.TryGetValue("uiScale", out scaleObj) && scaleObj != null
-            && double.TryParse(Convert.ToString(scaleObj, System.Globalization.CultureInfo.InvariantCulture), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out scale))
+        myPanelScaleOverride = 0;
+        if (cfg.TryGetValue("panelScale", out scaleObj) && scaleObj != null
+            && double.TryParse(Convert.ToString(scaleObj, System.Globalization.CultureInfo.InvariantCulture), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out scale)
+            && scale >= 0.5 && scale <= 3.0)
+        {
+            myPanelScaleOverride = scale;
             Sx.SetScale((float)scale);
+        }
     }
 
     private void SavePanelConfig()
@@ -1423,8 +1731,10 @@ public class SpidxUploaderModule : ICustomCommandModule
             { "incomingFolder", myIncomingFolder ?? "" },
             { "batchCount", mySelectedBatchCount },
             { "folderName", myFolderNameValue ?? "" },
-            { "uiScale", (double)Sx.K }
+            { "renderTemplate", myRenderTemplateSaved ?? "" },
+            { "renderRange", myRenderRangeSaved }
         };
+        if (myPanelScaleOverride > 0) payload["panelScale"] = myPanelScaleOverride;
         WriteJson(ConfigPath(), payload);
     }
 
@@ -1454,7 +1764,7 @@ public class SpidxUploaderModule : ICustomCommandModule
         }
         catch
         {
-            // Not fatal — worst case a setting doesn't persist this session.
+            // Not fatal - worst case a setting doesn't persist this session.
         }
     }
 
@@ -1487,7 +1797,7 @@ public class SpidxUploaderModule : ICustomCommandModule
         if (!dict.TryGetValue(key, out value) || value == null) return null;
         // JavaScriptSerializer.Deserialize<Dictionary<string,object>> turns
         // every JSON array into an ArrayList, never List<object> or
-        // object[] — the two casts this used to try both silently missed,
+        // object[] - the two casts this used to try both silently missed,
         // so this always fell through to an empty list regardless of what
         // the API actually returned. That's the whole "Leaderboard shows
         // nothing" bug.
@@ -1503,7 +1813,7 @@ public enum CardKind { Status, Warn, Plain }
 public enum SpidxBtnKind { Primary, Secondary, Small, SmallDanger, Tab, Toolbar }
 
 /* ========================================================================
- *  Sx — every color constant, taken 1:1 from the AE panel's :root CSS
+ *  Sx - every color constant, taken 1:1 from the AE panel's :root CSS
  *  custom properties (panel-ae.html), plus font helpers. Fonts are
  *  specified in PIXELS (GraphicsUnit.Pixel) exactly like the CSS
  *  font-size values, so 11.5px here is the same 11.5px as in the panel.
@@ -1527,9 +1837,9 @@ public static class Sx
     public static readonly Color WarnBorder = Color.FromArgb(77, 255, 176, 32);  // rgba(255,176,32,.30)
     public static readonly Color WarnText = Color.FromArgb(255, 206, 106);       // #ffce6a
 
-    // .seg button.active — rgba(10,132,255,.22)
+    // .seg button.active - rgba(10,132,255,.22)
     public static readonly Color SegActiveBg = Color.FromArgb(56, 10, 132, 255);
-    // .lb-item.selected — rgba(10,132,255,.18)
+    // .lb-item.selected - rgba(10,132,255,.18)
     public static readonly Color RowSelected = Color.FromArgb(46, 10, 132, 255);
 
     // .tier-badge.tier-*
@@ -1542,8 +1852,79 @@ public static class Sx
     public static readonly Color TierTesterBg = Color.FromArgb(18, 58, 74);
     public static readonly Color TierTesterText = AccentAlt;
 
-    /// <summary>UI scale: the AE panel's CSS px sizes x K (VEGAS's own UI is larger than the Adobe sidebar).</summary>
-    public static float K = 1.3f;
+    /// <summary>UI scale: the AE panel's CSS px sizes x K. K follows the screen's own scaling (Windows "Scale" 100% = 1.0,
+    /// 125% = 1.25, 150% = 1.5), so the panel looks the same size next to VEGAS's own UI on any computer. Before 3.0.1 it was a
+    /// fixed 1.3, which made the panel look too big at 100%; a manual override is "panelScale" in vegas-panel-config.json.</summary>
+    public static float K = 1.0f;
+
+    // ---- translations --------------------------------------------------------------------------------------------
+    // The helper (Spider Engine 3) writes the dictionary of the language chosen in the Dashboard to
+    // <incoming>\.panel-i18n.json. SpidxLabel and SpidxButton translate their text when it is assigned: an exact
+    // English match is replaced, anything else (including text built with numbers or names) stays as it is.
+    private static Dictionary<string, string> I18n = new Dictionary<string, string>();
+    private static Dictionary<string, string> I18nLower = new Dictionary<string, string>();   // for all-caps section labels
+
+    private static string NormKey(string text)
+    {
+        return System.Text.RegularExpressions.Regex.Replace(text, "\\s+", " ").Trim();
+    }
+
+    public static string Tr(string text)
+    {
+        if (string.IsNullOrEmpty(text) || I18n.Count == 0) return text;
+        string hit;
+        string key = NormKey(text);
+        if (I18n.TryGetValue(key, out hit) && !string.IsNullOrEmpty(hit)) return hit;
+        // an all-caps label ("FILES PER UPLOAD") is looked up by its normal wording and shown in capitals again
+        if (key == key.ToUpperInvariant() && I18nLower.TryGetValue(key.ToLowerInvariant(), out hit) && !string.IsNullOrEmpty(hit))
+            return hit.ToUpperInvariant();
+        return text;
+    }
+
+    public static void LoadI18n(string path)
+    {
+        try
+        {
+            if (!File.Exists(path)) return;
+            JavaScriptSerializer js = new JavaScriptSerializer();
+            js.MaxJsonLength = int.MaxValue;
+            Dictionary<string, object> root = js.Deserialize<Dictionary<string, object>>(File.ReadAllText(path, System.Text.Encoding.UTF8));
+            Dictionary<string, object> strings = (root != null && root.ContainsKey("strings")) ? root["strings"] as Dictionary<string, object> : null;
+            Dictionary<string, string> dict = new Dictionary<string, string>();
+            Dictionary<string, string> lower = new Dictionary<string, string>();
+            if (strings != null)
+            {
+                foreach (KeyValuePair<string, object> kv in strings)
+                {
+                    string v = kv.Value as string;
+                    if (string.IsNullOrEmpty(v)) continue;
+                    string k = NormKey(kv.Key);
+                    dict[k] = v;
+                    lower[k.ToLowerInvariant()] = v;
+                }
+            }
+            I18n = dict;
+            I18nLower = lower;
+        }
+        catch (Exception)
+        {
+            // an unreadable dictionary just means English
+        }
+    }
+
+    /// <summary>The screen's scaling factor as the process sees it (96 dpi = 1.0).</summary>
+    public static float DetectDpiScale()
+    {
+        try
+        {
+            using (Graphics g = Graphics.FromHwnd(IntPtr.Zero))
+                return Math.Max(0.8f, Math.Min(2.5f, g.DpiX / 96f));
+        }
+        catch (Exception)
+        {
+            return 1.0f;
+        }
+    }
     public static int S(int v) { return (int)Math.Round(v * K); }
     public static void SetScale(float k)
     {
@@ -1584,7 +1965,7 @@ public static class Sx
             (int)Math.Round(a.B + (b.B - a.B) * t));
     }
 
-    /// <summary>filter: brightness(x) — multiplies each channel.</summary>
+    /// <summary>filter: brightness(x) - multiplies each channel.</summary>
     public static Color Brighten(Color c, double factor)
     {
         return Color.FromArgb(c.A,
@@ -1602,7 +1983,7 @@ public static class Sx
             (int)(c.B * opacity + over.B * (1 - opacity)));
     }
 
-    /// <summary>opacity: x on a (possibly translucent) fill/border — keeps it translucent.</summary>
+    /// <summary>opacity: x on a (possibly translucent) fill/border - keeps it translucent.</summary>
     public static Color Fade(Color c, double opacity)
     {
         return Color.FromArgb((int)(c.A * opacity), c.R, c.G, c.B);
@@ -1628,7 +2009,7 @@ public static class Sx
 }
 
 /* ========================================================================
- *  Custom-drawn controls — plain WinForms OnPaint/GraphicsPath/SolidBrush,
+ *  Custom-drawn controls - plain WinForms OnPaint/GraphicsPath/SolidBrush,
  *  styled from Sx's CSS-sourced colors and pixel-based fonts.
  * ==================================================================== */
 
@@ -1689,6 +2070,12 @@ public static class SpidxAnim
 /// </summary>
 public class SpidxLabel : Control
 {
+    public override string Text
+    {
+        get { return base.Text; }
+        set { base.Text = Sx.Tr(value); }
+    }
+
     public float Tracking;          // letter-spacing in px
     public bool Center;
     public bool AlignRight;
@@ -1843,7 +2230,7 @@ public class SpidxLabel : Control
 }
 
 /// <summary>
-/// .card / .warn-box / plain rounded panel — rounded panel with a 1px
+/// .card / .warn-box / plain rounded panel - rounded panel with a 1px
 /// border; for the status card the border colour reacts to state
 /// (ok=green, error=red).
 /// </summary>
@@ -1922,6 +2309,12 @@ public class SpidxCard : Panel
 /// </summary>
 public class SpidxButton : Button
 {
+    public override string Text
+    {
+        get { return base.Text; }
+        set { base.Text = Sx.Tr(value); }
+    }
+
     private static readonly Color AccentPressed = Color.FromArgb(9, 111, 216);
 
     private struct Pal { public Color Fill, Border, Text; }
@@ -2074,14 +2467,71 @@ public class SpidxButton : Button
 
         Rectangle textBounds = bounds;
         if (myIsPressed && en && primarySecondary) textBounds.Offset(0, 1);
-        TextRenderer.DrawText(g, Text, Font, textBounds, text,
-            TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding
-            | TextFormatFlags.SingleLine | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix);
+        // A label wider than the button wraps onto a second line ("Photoshop +" / "Upload", like in the other
+        // panels) instead of being cut off. In a very narrow dock, where even one word does not fit, the
+        // short form ("PS + Upload") is used. Wrapping needs a button tall enough for two lines.
+        int padX = Sx.S(4);
+        int avail = Math.Max(10, textBounds.Width - 2 * padX);
+        string label = Text ?? "";
+        Size oneLine = MeasureOneLine(g, label);
+        string shorter = ShortForm(label);
+        if (oneLine.Width > avail && shorter != null && LongestWord(g, label) > avail)
+        {
+            label = shorter;
+            oneLine = MeasureOneLine(g, label);
+        }
+        Size wrapped = Size.Empty;
+        bool wrap = false;
+        if (oneLine.Width > avail && label.IndexOf(' ') >= 0 && LongestWord(g, label) <= avail)
+        {
+            wrapped = TextRenderer.MeasureText(g, label, Font, new Size(avail, 1000),
+                TextFormatFlags.WordBreak | TextFormatFlags.NoPadding | TextFormatFlags.NoPrefix);
+            wrap = wrapped.Height <= textBounds.Height - Sx.S(2);    // the real two-line block must fit the button
+        }
+        if (wrap)
+        {
+            Rectangle block = new Rectangle(textBounds.X + padX, textBounds.Y + Math.Max(0, (textBounds.Height - wrapped.Height) / 2),
+                avail, Math.Min(wrapped.Height, textBounds.Height));
+            TextRenderer.DrawText(g, label, Font, block, text,
+                TextFormatFlags.HorizontalCenter | TextFormatFlags.Top | TextFormatFlags.NoPadding
+                | TextFormatFlags.WordBreak | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix);
+        }
+        else
+        {
+            TextRenderer.DrawText(g, label, Font, textBounds, text,
+                TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding
+                | TextFormatFlags.SingleLine | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix);
+        }
+    }
+
+    private Size MeasureOneLine(Graphics g, string label)
+    {
+        return TextRenderer.MeasureText(g, label, Font, new Size(100000, 200),
+            TextFormatFlags.NoPadding | TextFormatFlags.SingleLine | TextFormatFlags.NoPrefix);
+    }
+
+    private int LongestWord(Graphics g, string label)
+    {
+        int longest = 0;
+        string[] words = label.Split(' ');
+        for (int i = 0; i < words.Length; i++)
+        {
+            if (words[i].Length == 0) continue;
+            int w = MeasureOneLine(g, words[i]).Width;
+            if (w > longest) longest = w;
+        }
+        return longest;
+    }
+
+    // Shorter wording for the one label that is too long for a very narrow dock; null = no short form.
+    private static string ShortForm(string label)
+    {
+        return label == Sx.Tr("Photoshop + Upload") ? Sx.Tr("PS + Upload") : null;
     }
 }
 
 /// <summary>
-/// .seg button — the batch-count (1/2/3) segmented toggle. Inactive =
+/// .seg button - the batch-count (1/2/3) segmented toggle. Inactive =
 /// surface + dim text; active = translucent accent fill + accent border
 /// + white text. Disabled = opacity .35.
 /// </summary>
@@ -2177,6 +2627,8 @@ public class SpidxBadge : Control
     public int Weight = 700;
 
     private string myText = "";
+    private string myTierName;       // set by SetTier: the tier on its own ("TESTER")
+    public bool Compact;             // true: show only the tier name, without "(5D)" - for a narrow header
     private Color myBg = Sx.TierDefaultBg;
     private Color myFg = Sx.TierDefaultText;
 
@@ -2186,8 +2638,14 @@ public class SpidxBadge : Control
         BackColor = Sx.Bg;
     }
 
+    private string Shown
+    {
+        get { return (Compact && myTierName != null) ? myTierName : myText; }
+    }
+
     public void Configure(string text, Color bg, Color fg)
     {
+        myTierName = null;
         myText = text ?? "";
         myBg = bg;
         myFg = fg;
@@ -2206,12 +2664,13 @@ public class SpidxBadge : Control
             default: bg = Sx.TierDefaultBg; fg = Sx.TierDefaultText; break;
         }
         Configure(text, bg, fg);
+        myTierName = (tier ?? "").ToUpperInvariant();
     }
 
     /// <summary>Text width + 6px padding on each side (like the CSS padding: 3px 6px).</summary>
     public int PreferredWidth()
     {
-        int w = TextRenderer.MeasureText(myText, Sx.Fnt(FontPx, Weight), new Size(100000, 100),
+        int w = TextRenderer.MeasureText(Shown, Sx.Fnt(FontPx, Weight), new Size(100000, 100),
             TextFormatFlags.NoPadding | TextFormatFlags.SingleLine).Width;
         return w + Sx.S(12) + 1;
     }
@@ -2229,13 +2688,13 @@ public class SpidxBadge : Control
             g.FillPath(brush, path);
         }
 
-        TextRenderer.DrawText(g, myText, Sx.Fnt(FontPx, Weight), bounds, myFg,
+        TextRenderer.DrawText(g, Shown, Sx.Fnt(FontPx, Weight), bounds, myFg,
             TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding | TextFormatFlags.SingleLine);
     }
 }
 
 /// <summary>
-/// .mark — 22x22 gradient square (linear-gradient(160deg, #0a84ff, #0060df))
+/// .mark - 22x22 gradient square (linear-gradient(160deg, #0a84ff, #0060df))
 /// with a bold white "S".
 /// </summary>
 public class SpidxBrandMark : Control
@@ -2268,7 +2727,7 @@ public class SpidxBrandMark : Control
 }
 
 /// <summary>
-/// .prog-track / .prog-fill — 5px progress bar, green when done.
+/// .prog-track / .prog-fill - 5px progress bar, green when done.
 /// </summary>
 public class SpidxProgressBar : Control
 {
@@ -2297,7 +2756,7 @@ public class SpidxProgressBar : Control
         Invalidate();
     }
 
-    /// <summary>.prog-fill.indeterminate — 38% bar sliding across the track.</summary>
+    /// <summary>.prog-fill.indeterminate - 38% bar sliding across the track.</summary>
     public void SetIndeterminate(bool on)
     {
         myIndeterminate = on;
@@ -2366,7 +2825,7 @@ public class SpidxProgressBar : Control
 }
 
 /// <summary>
-/// .dots / .dot.filled — batch collection progress dots (accent-2 when filled).
+/// .dots / .dot.filled - batch collection progress dots (accent-2 when filled).
 /// </summary>
 public class SpidxBatchDots : Control
 {
@@ -2410,7 +2869,7 @@ public class SpidxBatchDots : Control
 }
 
 /// <summary>
-/// input[type=text] / .lb-search — rounded (radius 8) surface field with a
+/// input[type=text] / .lb-search - rounded (radius 8) surface field with a
 /// 1px border that turns accent on focus. Wraps a borderless TextBox;
 /// placeholder text uses the native cue banner (EM_SETCUEBANNER).
 /// </summary>
@@ -2449,7 +2908,7 @@ public class SpidxInput : Control
     public string Cue
     {
         get { return myCue; }
-        set { myCue = value ?? ""; Invalidate(); }
+        set { myCue = Sx.Tr(value ?? ""); Invalidate(); }
     }
 
     // The real TextBox is only shown while focused or non-empty; otherwise the
@@ -2514,7 +2973,7 @@ public class SpidxMenuColors : ProfessionalColorTable
 }
 
 /// <summary>
-/// select — rounded surface box with a chevron; opens a dark dropdown.
+/// select - rounded surface box with a chevron; opens a dark dropdown.
 /// Replaces the stock ComboBox (which can't be themed dark/rounded).
 /// </summary>
 public class SpidxSelect : Control
@@ -2580,7 +3039,7 @@ public class SpidxSelect : Control
         {
             if (myDrop != null && myDrop.Visible) { myDrop.Close(); return; }
             // a click on this box while the list is open first closes it (outside-click
-            // detection) — don't immediately re-open it for that same click
+            // detection) - don't immediately re-open it for that same click
             if (Environment.TickCount - myClosedAt < 300) return;
 
             if (myDrop == null)
@@ -2777,7 +3236,7 @@ public class SpidxDropList : Control
 }
 
 /// <summary>
-/// .lb-table — the Leaderboard player list, drawn by hand so it looks like
+/// .lb-table - the Leaderboard player list, drawn by hand so it looks like
 /// the panel's HTML table: dark header (# / Nick / Points), 11px rows with
 /// hairline separators, hover + selected tint, max 220px of rows then a
 /// thin dark scrollbar (the panel's ::-webkit-scrollbar), wheel scrolling.
@@ -2926,7 +3385,7 @@ public class SpidxLbList : Control
     {
         base.OnMouseEnter(e);
         // WinForms only delivers the wheel to the focused control; take focus on
-        // hover so the wheel works — unless the user is typing in a text box.
+        // hover so the wheel works - unless the user is typing in a text box.
         try
         {
             Control focused = Control.FromChildHandle(GetFocus());

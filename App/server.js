@@ -1,25 +1,27 @@
 "use strict";
 
 /* ========================================================================
- *  SPIDX ENGINE 2.5
- *  The helper backend behind both panels (Photoshop UXP, After Effects
- *  CEP). What changed from Spider Engine 2:
+ *  SPIDER ENGINE 3 (SE3)
+ *  The helper backend behind every panel (Photoshop UXP, After Effects,
+ *  Premiere Pro, VEGAS Pro). What changed from Spider Engine 2:
  *
  *   - Heartbeat: .engine-status.json is rewritten every 15s with a
  *     "state" field, not only when something happens. The panels use its
  *     age to tell "helper is running and idle" apart from "helper is not
- *     running at all", which they previously could not do — a stale
+ *     running at all", which they previously could not do - a stale
  *     status file looked exactly like a healthy one.
  *   - Bounded memory: the "processed" set is capped (it used to grow by
  *     one filename per upload, forever, for the lifetime of the process
  *     AND across restarts through helper-state.json).
  *   - It no longer exits on a failed startup. A failed Google sign-in or
  *     a browser that won't launch now writes an error into the status
- *     file, tells the panels about it, and retries — instead of killing
+ *     file, tells the panels about it, and retries - instead of killing
  *     the process and leaving the tray reporting "Helper exited".
  * ==================================================================== */
 
 const fs   = require("fs");
+const http = require("http");
+const crypto = require("crypto");
 const path = require("path");
 const { execFile, spawn } = require("child_process");
 const { Worker } = require("worker_threads");
@@ -41,6 +43,10 @@ const BATCH_FORCE_SEND      = path.join(INCOMING, ".batch-force-send");
 const PRESET_REQUEST_FILE   = path.join(INCOMING, ".preset-request.json");
 const PRESET_RESULT_FILE    = path.join(INCOMING, ".preset-result.json");
 const BATCH_CANCEL          = path.join(INCOMING, ".batch-cancel");
+// Live progress of the running upload (written by the engine, shown by the Dashboard) and the
+// Dashboard's "Cancel upload" request (a marker file, same pattern as the other markers).
+const UPLOAD_PROGRESS_FILE  = path.join(INCOMING, ".upload-progress.json");
+const UPLOAD_CANCEL         = path.join(INCOMING, ".upload-cancel");
 const ENGINE_STATUS_FILE    = path.join(INCOMING, ".engine-status.json");
 const DEFAULT_PRESET_FILE   = path.join(INCOMING, ".default-camera-raw-preset.json");
 const COMPRESS_WORKER_FILE  = path.join(APP_DIR, "compress-worker.js");
@@ -67,9 +73,10 @@ const HEARTBEAT_MS     = 15 * 1000;
 const MAX_PROCESSED    = 500;
 
 const DRIVE_TIERS       = new Set(["pro", "dev", "tester"]);
-const { decideIncoming } = require("./file-rules.js");
+const { decideIncoming, videoFileReady } = require("./file-rules.js");
 const uploadHistory = require("./history.js");
 const presetStore = require("./presets.js");
+const i18n = require("./i18n.js");
 
 // What we know about a file that is on its way to being uploaded (by its final
 // name): which plugin it came from and whether it went through Photoshop. Only
@@ -79,7 +86,7 @@ const fileMeta = new Map();
 const MULTI_BATCH_TIERS = new Set(["pro", "dev", "tester"]);
 // Same tier set gates the Camera Raw preset route ("Photoshop + Upload")
 // as the real enforcement point, independent of whatever the Dashboard
-// has saved in config — mirrors how Drive silently falls back below.
+// has saved in config - mirrors how Drive silently falls back below.
 const PRO_FEATURE_TIERS = new Set(["pro", "dev", "tester"]);
 function tierAllowsDrive(tier)  { return DRIVE_TIERS.has(tier); }
 function tierMaxBatch(tier)     { return MULTI_BATCH_TIERS.has(tier) ? MAX_BATCH_SIZE : 1; }
@@ -120,7 +127,7 @@ function rememberProcessed(name) {
 const pending   = new Set();
 const queue     = [];
 
-function log(...args) { console.log("[SE2.5]", ...args); }
+function log(...args) { console.log("[SE3]", ...args); }
 
 function logEvent(step, status, extra = {}) {
     const entry = { ts: new Date().toISOString(), step, status, ...extra };
@@ -150,7 +157,7 @@ function ensureDirs() {
 }
 
 // Mirrors whatever the dashboard last saved into helper-config.json's
-// "cameraRawPreset" (a Photoshop Action Set/Action name — see dashboard.js)
+// "cameraRawPreset" (a Photoshop Action Set/Action name - see dashboard.js)
 // into the shared incoming folder, so the UXP panel, which can't read
 // helper-config.json directly but already reads/writes other small state
 // files in this same folder, can pick it up. The dashboard is the only
@@ -191,6 +198,7 @@ const DEFAULT_CONFIG = {
     drive:    { clientId: "", clientSecret: "", folderName: "Spidx Uploads" },
     license:  { checkUrl: "https://script.google.com/macros/s/AKfycbxU14FWyrOLfUlJCMq5vCqW1KFgqNVkHV7fqxhKnlZqQ_mGdV90m8penwmVZI7aOMuo/exec" },
     preferredBrowser: "auto",
+    language: "auto", // UI language: "auto" (follow Windows) or a code from i18n.js (en, pl, de, ...)
     autoRetry:   { enabled: true, maxAttempts: 3, delaySeconds: 10 },
     notifications: { enabled: true },
     cleanup:     { enabled: true, afterDays: 7 },
@@ -199,8 +207,8 @@ const DEFAULT_CONFIG = {
     throttle:    { enabled: false, minMs: 500, maxMs: 2000 },
     compression: { enabled: true, targetMB: 1.5 }, // image size the helper aims for; a client preset can change it
     activePreset: null,   // name of the last applied client preset (the presets themselves live in helper-config.json and are read by presets.js)
-    cameraRawPreset: null, // { actionSet, actionName } — set by the dashboard, mirrored to the incoming folder for the UXP panel; see syncDefaultCameraRawPreset()
-    dashboardTourSeen: false // set once by the Dashboard's first-run tour (POST /mark-tour-seen) — whitelisted here too, or loadConfig()'s own rewrite below would silently drop it on the very next helper restart
+    cameraRawPreset: null, // { actionSet, actionName } - set by the dashboard, mirrored to the incoming folder for the UXP panel; see syncDefaultCameraRawPreset()
+    dashboardTourSeen: false // set once by the Dashboard's first-run tour (POST /mark-tour-seen) - whitelisted here too, or loadConfig()'s own rewrite below would silently drop it on the very next helper restart
 };
 
 function loadConfig() {
@@ -215,6 +223,7 @@ function loadConfig() {
         }
         if (r.license && typeof r.license.checkUrl === "string") d.license.checkUrl = r.license.checkUrl.trim();
         if (VALID_BROWSERS.includes(r.preferredBrowser)) d.preferredBrowser = r.preferredBrowser;
+        if (typeof r.language === "string" && /^[A-Za-z-]{2,8}$/.test(r.language)) d.language = r.language;
         if (r.autoRetry) {
             if (typeof r.autoRetry.enabled === "boolean") d.autoRetry.enabled = r.autoRetry.enabled;
             if (Number.isFinite(r.autoRetry.maxAttempts)) d.autoRetry.maxAttempts = Math.max(1, Math.floor(r.autoRetry.maxAttempts));
@@ -307,6 +316,31 @@ function saveLastUpload(links, fileNames) {
     try { fs.writeFileSync(LAST_UPLOAD, JSON.stringify({ links, fileNames, savedAt: Date.now() }, null, 2), "utf8"); } catch {}
 }
 
+// ---- live upload progress + cancel (big files / video) ---------------------
+let currentUploadAbort = null;
+let lastProgressWrite = 0;
+
+function writeUploadProgress(p, force) {
+    const now = Date.now();
+    if (!force && now - lastProgressWrite < 700) return;
+    lastProgressWrite = now;
+    try { fs.writeFileSync(UPLOAD_PROGRESS_FILE, JSON.stringify({ ...p, updatedAt: now }), "utf8"); } catch {}
+}
+
+function clearUploadProgress() {
+    lastProgressWrite = 0;
+    try { if (fs.existsSync(UPLOAD_PROGRESS_FILE)) fs.unlinkSync(UPLOAD_PROGRESS_FILE); } catch {}
+}
+
+function checkUploadCancelMarker() {
+    if (!fs.existsSync(UPLOAD_CANCEL)) return;
+    try { fs.unlinkSync(UPLOAD_CANCEL); } catch {}
+    if (currentUploadAbort) {
+        log("Cancelling the running upload...");
+        currentUploadAbort.abort();
+    }
+}
+
 function writeBatchStatus(status) {
     try { fs.writeFileSync(BATCH_STATUS_FILE, JSON.stringify({ ...status, updatedAt: Date.now() }), "utf8"); } catch {}
 }
@@ -337,6 +371,10 @@ function writeEngineStatus() {
             tier: currentTier,
             roles: currentRoles,
             lastRejection,
+            renders: renderUsageSummary(),
+            pack: packContent.getStatus(),
+            failedUploads: failedUploads.length,
+            language: (() => { try { return i18n.currentLanguage(); } catch { return "en"; } })(),
             presets: presetNames(),
             activePreset: config ? (config.activePreset || null) : null,
             activePresetModified: activePresetIsModified(),
@@ -367,18 +405,36 @@ function startHeartbeat() {
 /*  Persistent queue                                                      */
 /* ---------------------------------------------------------------------- */
 
+// The batch being uploaded RIGHT NOW is saved too (not only the ones waiting behind it): if
+// the helper is killed or the PC loses power mid-upload, the next start picks it up again, and
+// for big files the Drive session saved by drive-resumable.js continues where it stopped.
+let activeEntry = null;
+const MAX_RESUMES = 3; // a batch that keeps killing the helper is dropped after this many restarts
+
 function loadQueue() {
     try {
         const saved = JSON.parse(fs.readFileSync(QUEUE_FILE, "utf8"));
         if (Array.isArray(saved)) {
-            for (const entry of saved) queue.push(entry);
+            for (const entry of saved) {
+                if (!entry || !Array.isArray(entry.files)) continue;
+                const files = entry.files.filter(f => { try { return fs.existsSync(f); } catch { return false; } });
+                if (files.length === 0) continue;
+                if (entry.active) {
+                    entry.resumes = (entry.resumes || 0) + 1;
+                    if (entry.resumes > MAX_RESUMES) { log(`Dropping ${path.basename(files[0])}: it was interrupted ${MAX_RESUMES} times already.`); continue; }
+                }
+                queue.push({ files, folderName: entry.folderName || null, resumes: entry.resumes || 0 });
+            }
             if (queue.length > 0) log(`Restored ${queue.length} pending batch(es) from the previous session.`);
         }
     } catch {}
 }
 
 function persistQueue() {
-    try { fs.writeFileSync(QUEUE_FILE, JSON.stringify(queue), "utf8"); } catch {}
+    try {
+        const all = activeEntry ? [{ ...activeEntry, active: true }, ...queue] : queue;
+        fs.writeFileSync(QUEUE_FILE, JSON.stringify(all), "utf8");
+    } catch {}
 }
 
 /* ---------------------------------------------------------------------- */
@@ -496,7 +552,7 @@ async function resolveBrowserChoice() {
         browserName = det.name;
         exePath = det.exePath;
         if (browserName === "unknown") {
-            log("Default browser not detected — falling back to Edge.");
+            log("Default browser not detected - falling back to Edge.");
             log('Tip: set "preferredBrowser" in helper-config.json, e.g. "preferredBrowser": "opera-gx"');
         }
     }
@@ -528,8 +584,9 @@ async function launchBrowser(browserName, exePathHint) {
 
 function wireUpContext(ctx) {
     page = ctx.pages()[0] || null;
-    ctx.on("page", p => { page = p; });
-    ctx.on("close", () => { browser = null; page = null; });
+    // a tab the USER opens must not become the upload tab (the helper would navigate it away); only take over when ours is gone
+    ctx.on("page", p => { if (!page || page.isClosed()) page = p; });
+    ctx.on("close", () => { browser = null; page = null; log("The WorkUpload browser window was closed - it opens again for the next upload."); });
     const autoAccept = pg => pg.on("dialog", async d => { try { await d.accept(); } catch {} });
     ctx.pages().forEach(autoAccept);
     ctx.on("page", autoAccept);
@@ -542,7 +599,7 @@ function isBrowserAlive() {
 async function ensureBrowser() {
     if (isBrowserAlive()) {
         const pages = browser.pages();
-        if (!page || page.isClosed()) page = pages[0] || await browser.newPage();
+        if (!page || page.isClosed()) page = pages.find(pg => !pg.isClosed()) || await browser.newPage();
         return page;
     }
     if (browserLaunching) return browserLaunching;
@@ -574,7 +631,7 @@ async function warmUpBrowser() {
     try {
         const p = await ensureBrowser();
         await timedStep("warm_up_navigate", {}, () => p.goto(WORKUPLOAD_URL, { waitUntil: "domcontentloaded", timeout: 30000 }));
-        log("Browser is up and WorkUpload is loaded — ready for uploads.");
+        log("Browser is up and WorkUpload is loaded - ready for uploads.");
     } catch (err) {
         log("Could not warm up the browser at startup:", err.message);
     }
@@ -608,6 +665,28 @@ const SAVE_FILE_SELECTORS = [
     'text=/save file/i'
 ];
 
+// The upload runs inside the WorkUpload tab. If that tab is closed the loops below used to keep polling a dead page
+// (for minutes, or for hours with a big video) and the whole queue stood still. Now they stop at once.
+function assertTabOpen(p) {
+    if (!p || p.isClosed()) throw new Error("Target page has been closed (the WorkUpload tab was closed).");
+}
+
+// After a closed tab / window: forget what is dead so ensureBrowser() can open a fresh one.
+function recoverBrowserState() {
+    try { if (page && page.isClosed()) page = null; } catch { page = null; }
+    try {
+        if (browser && browser.pages().filter(pg => !pg.isClosed()).length === 0) {
+            const dead = browser;
+            browser = null;
+            page = null;
+            try { dead.close().catch(() => {}); } catch {}
+        }
+    } catch {
+        browser = null;
+        page = null;
+    }
+}
+
 async function findFirstMatch(p, selectors) {
     for (const s of selectors) {
         try { const l = p.locator(s).first(); if (await l.count() > 0) return l; } catch {}
@@ -629,6 +708,7 @@ async function findVisibleMatch(p, selectors) {
 async function waitForFileInput(p, timeoutMs = 120000) {
     const started = Date.now();
     while (Date.now() - started < timeoutMs) {
+        assertTabOpen(p);
         const input = await findFirstMatch(p, FILE_INPUT_SELECTORS);
         if (input) return input;
         await sleep(1000);
@@ -640,6 +720,7 @@ async function clickSaveFile(p, timeoutMs = 120000) {
     const started = Date.now();
     let attempts = 0;
     while (Date.now() - started < timeoutMs) {
+        assertTabOpen(p);
         const btn = await findVisibleMatch(p, SAVE_FILE_SELECTORS);
         if (!btn) { await sleep(500); continue; }
         try {
@@ -659,6 +740,7 @@ async function waitForShareLink(p, timeoutMs = 20000) {
     const started = Date.now();
     const re = /https?:\/\/(www\.)?workupload\.com\/[a-zA-Z0-9\/_-]+/;
     while (Date.now() - started < timeoutMs) {
+        assertTabOpen(p);
         try {
             const els = await p.locator('a[href*="workupload.com"],input[value*="workupload.com"],textarea:has-text("workupload.com")').all();
             for (const el of els) {
@@ -685,22 +767,26 @@ const FAILURE_REASON = {
     DRIVE_QUOTA:          "drive_quota",
     DRIVE_NETWORK:        "drive_network",
     DRIVE_UNKNOWN:        "drive_unknown",
+    CANCELLED:            "cancelled",
+    PAGE_CLOSED:          "page_closed",
     UNKNOWN:              "unknown"
 };
 
 const RETRY_STRATEGY = {
-    [FAILURE_REASON.SECURITY_CHECK]:        { delayMultiplier: 3, hint: "Looks like a Security Check — complete it manually in the browser." },
-    [FAILURE_REASON.SAVE_BUTTON_NOT_FOUND]: { delayMultiplier: 2, hint: "Could not find the Save button — WorkUpload's page may have changed." },
-    [FAILURE_REASON.NAVIGATION]:            { delayMultiplier: 1, hint: "Network/navigation hiccup — usually resolves itself on retry." },
-    [FAILURE_REASON.DRIVE_AUTH]:            { delayMultiplier: 4, hint: "Google Drive auth issue — check helper-config.json or reset sign-in." },
+    [FAILURE_REASON.SECURITY_CHECK]:        { delayMultiplier: 3, hint: "Looks like a Security Check - complete it manually in the browser." },
+    [FAILURE_REASON.SAVE_BUTTON_NOT_FOUND]: { delayMultiplier: 2, hint: "Could not find the Save button - WorkUpload's page may have changed." },
+    [FAILURE_REASON.NAVIGATION]:            { delayMultiplier: 1, hint: "Network/navigation hiccup - usually resolves itself on retry." },
+    [FAILURE_REASON.DRIVE_AUTH]:            { delayMultiplier: 4, hint: "Google Drive auth issue - check helper-config.json or reset sign-in." },
     [FAILURE_REASON.DRIVE_QUOTA]:           { delayMultiplier: 6, hint: "Google Drive storage looks full." },
-    [FAILURE_REASON.DRIVE_NETWORK]:         { delayMultiplier: 1, hint: "Network hiccup talking to Google Drive — usually resolves on retry." },
+    [FAILURE_REASON.DRIVE_NETWORK]:         { delayMultiplier: 1, hint: "Network hiccup talking to Google Drive - usually resolves on retry." },
     [FAILURE_REASON.DRIVE_UNKNOWN]:         { delayMultiplier: 1, hint: null },
+    [FAILURE_REASON.PAGE_CLOSED]:           { delayMultiplier: 0, hint: "The WorkUpload tab (or browser window) was closed - opening a new one and starting again." },
     [FAILURE_REASON.UNKNOWN]:               { delayMultiplier: 1, hint: null }
 };
 
 function classifyError(err) {
     const msg = (err && err.message || "").toLowerCase();
+    if (/(target page|page|context|browser)[^.]{0,40}(has been|was|is) closed|target closed|session closed|browser has disconnected/.test(msg)) return FAILURE_REASON.PAGE_CLOSED;
     if (msg.includes("net::") || msg.includes("econnrefused") || msg.includes("enotfound") ||
         (msg.includes("timeout") && (msg.includes("goto") || msg.includes("navigat")))) return FAILURE_REASON.NAVIGATION;
     return FAILURE_REASON.UNKNOWN;
@@ -717,10 +803,21 @@ function throttleDelayMs() {
 }
 
 /* ---------------------------------------------------------------------- */
-/*  Upload — WorkUpload path (Playwright)                               */
+/*  Upload - WorkUpload path (Playwright)                               */
 /* ---------------------------------------------------------------------- */
 
 async function attemptUploadWorkUpload(filePaths) {
+    try {
+        return await attemptUploadWorkUploadOnce(filePaths);
+    } catch (err) {
+        if (classifyError(err) !== FAILURE_REASON.PAGE_CLOSED) throw err;
+        recoverBrowserState();
+        showNotification("Spidx Uploader", i18n.t("The WorkUpload tab was closed - opening a new one."));
+        return { ok: false, reason: FAILURE_REASON.PAGE_CLOSED, message: err.message, linksByFile: new Map() };
+    }
+}
+
+async function attemptUploadWorkUploadOnce(filePaths) {
     const delay = throttleDelayMs();
     if (delay > 0) await sleep(delay);
 
@@ -732,7 +829,7 @@ async function attemptUploadWorkUpload(filePaths) {
     }
 
     // Start ALL compression jobs in parallel worker threads NOW, while
-    // also waiting for the WorkUpload file input to appear — the two
+    // also waiting for the WorkUpload file input to appear - the two
     // happen simultaneously instead of back to back.
     const compressionJobs = new Map(
         filePaths.map(fp => [fp, timedStep("compress", { file: path.basename(fp) }, () => compressInWorker(fp)).catch(err => ({ ok: false, message: err.message, path: fp }))])
@@ -742,7 +839,7 @@ async function attemptUploadWorkUpload(filePaths) {
     const input = await timedStep("wait_file_input", {}, () => waitForFileInput(p, 120000));
 
     if (!input) {
-        // Cancel workers — nothing we can do if the page never loaded a file input
+        // Cancel workers - nothing we can do if the page never loaded a file input
         log("File input not found (Security Check?).");
         return { ok: false, reason: FAILURE_REASON.SECURITY_CHECK, message: "File input not found.", linksByFile: new Map() };
     }
@@ -763,29 +860,36 @@ async function attemptUploadWorkUpload(filePaths) {
         }
     }
 
+    // Big files (rendered video) need far longer waits than screenshots.
+    let totalBytes = 0;
+    for (const up of uploadPaths) { try { totalBytes += fs.statSync(up).size; } catch {} }
+    const bigUpload = totalBytes > 20 * 1024 * 1024;
+    const saveTimeout = bigUpload ? 10 * 60 * 1000 : 120000;
+    const linkTimeout = bigUpload ? Math.min(4 * 3600 * 1000, 20000 + (totalBytes / (256 * 1024)) * 1000) : 20000;
+
     await timedStep("select_files", {}, () => input.setInputFiles(uploadPaths));
     log("File(s) selected. Waiting for Save button...");
 
-    const saved = await timedStep("click_save", {}, () => clickSaveFile(p, 120000));
+    const saved = await timedStep("click_save", {}, () => clickSaveFile(p, saveTimeout));
     if (!saved) {
         return { ok: false, reason: FAILURE_REASON.SAVE_BUTTON_NOT_FOUND, message: "Could not click Save.", linksByFile: new Map() };
     }
 
     log("Save clicked. Waiting for link...");
-    const link = await timedStep("wait_link", {}, () => waitForShareLink(p, 20000));
+    const link = await timedStep("wait_link", {}, () => waitForShareLink(p, linkTimeout));
     const linksByFile = new Map();
     if (link) {
         filePaths.forEach(fp => linksByFile.set(path.basename(fp), link));
         log("Link:", link);
     } else {
-        log("Could not read the link automatically — check the browser tab.");
+        log("Could not read the link automatically - check the browser tab.");
     }
 
     return { ok: true, linksByFile };
 }
 
 /* ---------------------------------------------------------------------- */
-/*  Upload — Drive path (API, no browser)                               */
+/*  Upload - Drive path (API, no browser)                               */
 /* ---------------------------------------------------------------------- */
 
 async function attemptUploadDrive(filePaths, folderName) {
@@ -811,8 +915,17 @@ async function attemptUploadDrive(filePaths, folderName) {
         filePaths.map(fp => [fp, timedStep("compress", { file: path.basename(fp) }, () => compressInWorker(fp)).catch(err => ({ ok: false, message: err.message, path: fp }))])
     );
 
+    const ac = new AbortController();
+    currentUploadAbort = ac;
+    try {
+    let fileIndex = 0;
     for (const fp of filePaths) {
         const name = path.basename(fp);
+        fileIndex++;
+        const upOpts = {
+            signal: ac.signal,
+            onProgress: p => writeUploadProgress({ file: name, index: fileIndex, count: filePaths.length, sent: p.sent, total: p.total, bytesPerSec: p.bytesPerSec, resumed: !!p.resumed, state: "uploading" }, p.sent >= p.total)
+        };
         const compResult = await compressionJobs.get(fp);
         const uploadPath = (!compResult || !compResult.ok) ? fp : compResult.path;
 
@@ -823,20 +936,28 @@ async function attemptUploadDrive(filePaths, folderName) {
 
         try {
             if (batchFolder) {
-                await timedStep("drive_upload", { file: name }, () => driveApi.uploadFileToFolder(uploadPath, name, batchFolder.folderId));
+                await timedStep("drive_upload", { file: name }, () => driveApi.uploadFileToFolder(uploadPath, name, batchFolder.folderId, upOpts));
                 linksByFile.set(name, batchFolder.link);
             } else {
-                const result = await timedStep("drive_upload", { file: name }, () => driveApi.uploadFileToDrive(uploadPath, name));
+                const result = await timedStep("drive_upload", { file: name }, () => driveApi.uploadFileToDrive(uploadPath, name, upOpts));
                 linksByFile.set(name, result.link);
                 log(`Uploaded to Drive: ${name} →`, result.link);
             }
         } catch (err) {
-            return { ok: false, reason: driveApi.classifyDriveError(err), message: err.message, linksByFile };
+            const reason = driveApi.classifyDriveError(err);
+            if (reason === "cancelled") {
+                try { driveApi.forgetUpload(uploadPath, name, batchFolder ? batchFolder.folderId : null); } catch {}
+            }
+            return { ok: false, reason, message: err.message, linksByFile };
         }
     }
 
     if (batchFolder) log("Batch folder link:", batchFolder.link);
     return { ok: true, linksByFile };
+    } finally {
+        if (currentUploadAbort === ac) currentUploadAbort = null;
+        clearUploadProgress();
+    }
 }
 
 function attemptUpload(filePaths, folderName) {
@@ -849,6 +970,22 @@ function attemptUpload(filePaths, folderName) {
 /*  Batch success / failure                                             */
 /* ---------------------------------------------------------------------- */
 
+async function makeHistoryThumb(filePath) {
+    try {
+        if (![".png", ".jpg", ".jpeg", ".webp"].includes(path.extname(filePath).toLowerCase())) return null;
+        if (!fs.existsSync(filePath)) return null;
+        const sharp = require("sharp");
+        const buf = await sharp(filePath, { failOn: "none" })
+            .rotate()
+            .resize(96, 96, { fit: "cover" })
+            .jpeg({ quality: 62 })
+            .toBuffer();
+        return "data:image/jpeg;base64," + buf.toString("base64");
+    } catch {
+        return null;
+    }
+}
+
 function finalizeBatchSuccess(filePaths, linksByFile, folderName) {
     const rawLinks = filePaths.map(f => linksByFile.get(path.basename(f))).filter(Boolean);
     const links = [...new Set(rawLinks)];
@@ -859,13 +996,13 @@ function finalizeBatchSuccess(filePaths, linksByFile, folderName) {
             log(ok ? `Link(s) copied to clipboard (${links.length}).` : "Could not copy link(s) to clipboard.");
         });
     } else {
-        log("No link detected automatically — check the browser tab.");
+        log("No link detected automatically - check the browser tab.");
     }
 
     saveLastUpload(links, filePaths.map(f => path.basename(f)));
 
     const metas = filePaths.map(f => fileMeta.get(path.basename(f)) || {});
-    uploadHistory.append({
+    const historyEntry = {
         files: filePaths.map(f => path.basename(f)),
         links,
         destination: config.destination,
@@ -873,14 +1010,20 @@ function finalizeBatchSuccess(filePaths, linksByFile, folderName) {
         source: metas.map(m => m.source).find(Boolean) || null,
         viaPhotoshop: metas.some(m => m.ps),
         preset: config.activePreset || null
-    });
+    };
+    // The Dashboard's History shows a small preview of the first still. It is made in the background
+    // (a ~4 KB JPEG stored inside the history entry); if anything fails the entry is saved without it.
+    makeHistoryThumb(filePaths[0]).then(
+        thumb => uploadHistory.append(thumb ? { ...historyEntry, thumb } : historyEntry),
+        () => uploadHistory.append(historyEntry)
+    );
     for (const f of filePaths) fileMeta.delete(path.basename(f));
 
     showNotification(
         "Spidx Uploader",
         filePaths.length === 1
-            ? `Uploaded ${path.basename(filePaths[0])}${links.length ? " — link copied." : " — link not detected."}`
-            : `Uploaded ${filePaths.length} files${links.length ? ` — ${links.length} link(s) copied.` : " — links not detected."}`
+            ? `Uploaded ${path.basename(filePaths[0])}${links.length ? " - link copied." : " - link not detected."}`
+            : `Uploaded ${filePaths.length} files${links.length ? ` - ${links.length} link(s) copied.` : " - links not detected."}`
     );
 
     logEvent("batch", "ok", { count: filePaths.length, linksFound: links.length });
@@ -898,18 +1041,34 @@ async function processBatch(filePaths, folderName) {
     const baseDelay = Number.isFinite(retryCfg.delaySeconds) ? retryCfg.delaySeconds : 10;
     const linksByFile = new Map();
     let remaining = filePaths.slice();
+    let freeReopens = 0;                       // a closed tab is not the upload's fault: up to 3 re-openings do not count
 
     logEvent("batch", "start", { files: filePaths.map(f => path.basename(f)), count: filePaths.length });
     writeBatchStatus({ state: "uploading", have: filePaths.length, target: filePaths.length });
 
     for (let attempt = 1; attempt <= maxAttempts && remaining.length > 0; attempt++) {
-        if (attempt > 1) log(`Retry ${attempt}/${maxAttempts} — ${remaining.length} file(s) remaining.`);
+        if (attempt > 1) log(`Retry ${attempt}/${maxAttempts} - ${remaining.length} file(s) remaining.`);
 
         try {
             const result = await attemptUpload(remaining, folderName);
+            if (result.reason === FAILURE_REASON.CANCELLED) {
+                log("Upload cancelled by the user.");
+                logEvent("batch", "cancelled", { files: filePaths.map(f => path.basename(f)) });
+                showNotification("Spidx Uploader", i18n.t("Upload cancelled."));
+                writeBatchStatus({ state: "idle" });
+                return;
+            }
             for (const [name, link] of result.linksByFile || []) linksByFile.set(name, link);
             remaining = remaining.filter(f => !linksByFile.has(path.basename(f)));
             if (remaining.length === 0) break;
+
+            if (result.reason === FAILURE_REASON.PAGE_CLOSED && freeReopens < 3) {
+                freeReopens++;
+                attempt--;
+                log(`The WorkUpload tab was closed - opening a new one (${freeReopens}/3).`);
+                await sleep(1500);
+                continue;
+            }
 
             const strategy = RETRY_STRATEGY[result.reason] || RETRY_STRATEGY[FAILURE_REASON.UNKNOWN];
             log(`Attempt ${attempt}/${maxAttempts} incomplete [${result.reason}]: ${result.message}`);
@@ -923,6 +1082,14 @@ async function processBatch(filePaths, folderName) {
             }
         } catch (err) {
             const reason = classifyError(err);
+            if (reason === FAILURE_REASON.PAGE_CLOSED && freeReopens < 3) {
+                freeReopens++;
+                attempt--;
+                recoverBrowserState();
+                log(`The WorkUpload tab was closed - opening a new one (${freeReopens}/3).`);
+                await sleep(1500);
+                continue;
+            }
             const strategy = RETRY_STRATEGY[reason] || RETRY_STRATEGY[FAILURE_REASON.UNKNOWN];
             log(`Attempt ${attempt}/${maxAttempts} failed [${reason}]: ${err.message}`);
             if (strategy.hint) log(strategy.hint);
@@ -943,8 +1110,58 @@ async function processBatch(filePaths, folderName) {
 
     log(`Gave up after ${maxAttempts} attempt(s). ${remaining.length} file(s) not uploaded.`);
     logEvent("batch", "fail", { failedFiles: remaining.map(f => path.basename(f)), attempts: maxAttempts });
-    showNotification("Spidx Uploader — Failed", `Could not upload ${remaining.length} file(s). Check App\\helper.log.`);
+    recordFailedUpload(remaining, folderName);
+    showNotification("Spidx Uploader - Failed", `Could not upload ${remaining.length} file(s). The Dashboard has a "Retry" button; details are in App\\helper.log.`);
     writeBatchStatus({ state: "error", have: filePaths.length - remaining.length, target: filePaths.length });
+}
+
+/* ---------------------------------------------------------------------- */
+/*  Failed uploads: kept so that nothing is lost, and sent again on request  */
+/*  (a closed tab, no internet, a Security Check...). The files themselves   */
+/*  are never deleted by a failure - only a successful upload removes them.  */
+/* ---------------------------------------------------------------------- */
+const FAILED_UPLOADS_FILE = path.join(APP_DIR, "failed-uploads.json");
+const RETRY_FAILED_REQUEST_FILE = path.join(INCOMING, ".retry-failed-request");
+
+function loadFailedUploads() {
+    try {
+        const list = JSON.parse(fs.readFileSync(FAILED_UPLOADS_FILE, "utf8"));
+        return Array.isArray(list) ? list.filter(e => e && Array.isArray(e.files)) : [];
+    } catch { return []; }
+}
+let failedUploads = loadFailedUploads();
+
+function saveFailedUploads() {
+    try { fs.writeFileSync(FAILED_UPLOADS_FILE, JSON.stringify(failedUploads), "utf8"); } catch {}
+}
+
+function recordFailedUpload(files, folderName) {
+    const existing = files.filter(f => { try { return fs.existsSync(f); } catch { return false; } });
+    if (!existing.length) return;
+    failedUploads.push({ files: existing, folderName: folderName || null, at: Date.now() });
+    failedUploads = failedUploads.slice(-20);
+    saveFailedUploads();
+    writeEngineStatus();
+}
+
+function retryFailedUploads() {
+    const list = failedUploads;
+    failedUploads = [];
+    saveFailedUploads();
+    let sent = 0;
+    for (const entry of list) {
+        const files = entry.files.filter(f => { try { return fs.existsSync(f); } catch { return false; } });
+        if (files.length) { enqueue(files, entry.folderName); sent++; }
+    }
+    log(`Retrying ${sent} failed upload(s).`);
+    writeEngineStatus();
+    return sent;
+}
+
+function checkRetryFailedRequest() {
+    if (!fs.existsSync(RETRY_FAILED_REQUEST_FILE)) return;
+    try { fs.unlinkSync(RETRY_FAILED_REQUEST_FILE); } catch {}
+    retryFailedUploads();
 }
 
 function enqueue(filePaths, folderName) {
@@ -963,6 +1180,7 @@ async function processQueue() {
     try {
         while (queue.length > 0) {
             const entry = queue.shift();
+            activeEntry = entry;
             persistQueue();
             const filePaths = entry.files;
 
@@ -972,7 +1190,12 @@ async function processQueue() {
             log("========================================");
             if (queue.length > 0) log(`${queue.length} more in queue.`);
 
-            await processBatch(filePaths, entry.folderName);
+            try {
+                await processBatch(filePaths, entry.folderName);
+            } finally {
+                activeEntry = null;
+                persistQueue();
+            }
         }
     } finally {
         uploading = false;
@@ -1033,7 +1256,7 @@ function addFileToBatch(fullPath) {
 
     clearBatchTimeoutTimer();
     currentBatch.timeoutTimer = setTimeout(() => {
-        log(`Batch timeout — sending ${currentBatch.files.length}/${currentBatch.target} file(s).`);
+        log(`Batch timeout - sending ${currentBatch.files.length}/${currentBatch.target} file(s).`);
         finalizeBatchCollection();
     }, (config.batch.timeoutSeconds || 120) * 1000);
 }
@@ -1044,7 +1267,7 @@ function checkForceSendMarker() {
         return;
     }
     if (fs.existsSync(BATCH_FORCE_SEND)) {
-        log("Force-send requested — sending partial batch now.");
+        log("Force-send requested - sending partial batch now.");
         finalizeBatchCollection();
     }
 }
@@ -1084,6 +1307,58 @@ function checkPresetRequest() {
     try { fs.writeFileSync(PRESET_RESULT_FILE, JSON.stringify({ id: request.id || null, ...result, time: Date.now() }), "utf8"); } catch {}
 }
 
+/* ---------------------------------------------------------------------- */
+/*  Leaderboard proxy: the Adobe panels ask the helper to fetch it         */
+/*                                                                          */
+/*  The leaderboard API sends no CORS headers, so the panels used to run   */
+/*  Chromium with --disable-web-security (which switches the browser's    */
+/*  protections off for the WHOLE panel). Now a panel drops a small        */
+/*  request file, the helper does the HTTP call (Node has no CORS) and    */
+/*  writes the answer back - the same file protocol as every other panel  */
+/*  feature, so the panels no longer need that flag.                       */
+/* ---------------------------------------------------------------------- */
+const LEADERBOARD_REQUEST_FILE = path.join(INCOMING, ".leaderboard-request.json");
+const LEADERBOARD_RESULT_FILE  = path.join(INCOMING, ".leaderboard-result.json");
+const LEADERBOARD_HOST = "169.58.221.14";
+const LEADERBOARD_PORT = 8080;
+let leaderboardBusy = false;
+
+function checkLeaderboardRequest() {
+    if (leaderboardBusy || !fs.existsSync(LEADERBOARD_REQUEST_FILE)) return;
+    let request = null;
+    try { request = JSON.parse(fs.readFileSync(LEADERBOARD_REQUEST_FILE, "utf8")); } catch {}
+    try { fs.unlinkSync(LEADERBOARD_REQUEST_FILE); } catch {}
+    if (!request) return;
+
+    const reply = obj => {
+        try { fs.writeFileSync(LEADERBOARD_RESULT_FILE, JSON.stringify({ id: request.id || null, time: Date.now(), ...obj }), "utf8"); } catch {}
+    };
+    const query = String(request.query || "");
+    // only a plain query string, nothing that could change the host or the path
+    if (!/^(\?[A-Za-z0-9_=&%.+-]*)?$/.test(query) || query.length > 300) { reply({ ok: false, error: "Bad leaderboard query." }); return; }
+
+    leaderboardBusy = true;
+    let finished = false;
+    const done = obj => { if (finished) return; finished = true; leaderboardBusy = false; reply(obj); };
+    try {
+        const req = http.get({ host: LEADERBOARD_HOST, port: LEADERBOARD_PORT, path: "/api/fortnite" + query, timeout: 6000 }, res => {
+            const chunks = [];
+            let size = 0;
+            res.on("data", c => { size += c.length; if (size > 2 * 1024 * 1024) { req.destroy(); done({ ok: false, error: "The leaderboard answer was too large." }); return; } chunks.push(c); });
+            res.on("end", () => {
+                if (res.statusCode < 200 || res.statusCode >= 300) { done({ ok: false, error: "Server responded with " + res.statusCode }); return; }
+                try { done({ ok: true, json: JSON.parse(Buffer.concat(chunks).toString("utf8")) }); }
+                catch { done({ ok: false, error: "The leaderboard answer was not valid data." }); }
+            });
+            res.on("error", err => done({ ok: false, error: err.message }));
+        });
+        req.on("timeout", () => { req.destroy(); done({ ok: false, error: "The leaderboard server did not answer in time." }); });
+        req.on("error", err => done({ ok: false, error: err.message || "Could not reach the leaderboard server." }));
+    } catch (err) {
+        done({ ok: false, error: err.message });
+    }
+}
+
 function checkCancelMarker() {
     if (!fs.existsSync(BATCH_CANCEL)) return;
     try { fs.unlinkSync(BATCH_CANCEL); } catch {}
@@ -1103,10 +1378,12 @@ function checkCancelMarker() {
 // which are uploaded as-is (only raster stills go through compression).
 const UPLOADABLE_RE = /\.(jpe?g|png|webp|tiff?|mp4|mov|avi|mkv|webm|gif)$/i;
 function isJpg(name) { return UPLOADABLE_RE.test(name); }
+const VIDEO_RE = /\.(mp4|mov|m4v|avi|mkv|webm|mxf)$/i;
+function isVideoFile(name) { return VIDEO_RE.test(name); }
 function isCompressedByproduct(name) { return /\.compressed\.jpg$/i.test(name); }
 
 // The ".ps.png" suffix is the AE panel's explicit "route this through
-// Photoshop" choice (its "Photoshop + Upload" button) — a plain ".png"
+// Photoshop" choice (its "Photoshop + Upload" button) - a plain ".png"
 // is its "Upload" button and always goes straight through, even if a
 // preset is configured. Vegas's script only ever writes plain ".png",
 // so it's unaffected by this and always uploads direct for now.
@@ -1120,27 +1397,35 @@ function needsCameraRaw(name) {
 // photoshop-bridge.js) to play the Dashboard-configured Camera Raw
 // Action before it gets queued for upload. On any failure (Photoshop
 // not open, Action not found, etc.) this deliberately still uploads the
-// original frame rather than dropping the capture — the capture matters
+// original frame rather than dropping the capture - the capture matters
 // more than the edit.
 async function routeThroughPhotoshop(fullPath) {
     const name = path.basename(fullPath);
     log(`Routing ${name} through Photoshop (Camera Raw Action)...`);
     logEvent("camera_raw", "start", { file: name });
 
+    // Photoshop writes "<name>.camraw.jpg" straight into incoming while it works. The folder scan
+    // would see that file as a brand-new capture and upload it - and then this function uploads it
+    // again when Photoshop finishes (= the same picture twice). So mark the expected output as
+    // already handled BEFORE Photoshop starts; this function is its only owner.
+    const expectedOut = path.basename(fullPath.replace(/\.ps\.png$/i, "").replace(/\.png$/i, "") + ".camraw.jpg");
+    rememberProcessed(expectedOut);
+    saveState();
+
     const result = await photoshopBridge.runCameraRaw(fullPath, config.cameraRawPreset);
 
     if (result.ok) {
         const outName = path.basename(result.outputPath);
-        log(`Camera Raw applied — continuing with ${outName}.`);
+        log(`Camera Raw applied - continuing with ${outName}.`);
         logEvent("camera_raw", "ok", { file: name, output: outName });
         rememberProcessed(outName);
         saveState();
         fileMeta.set(outName, { ...(fileMeta.get(name) || {}), ps: true });
         addFileToBatch(result.outputPath);
     } else {
-        log(`Camera Raw step failed for ${name}: ${result.error} — uploading the original frame instead.`);
+        log(`Camera Raw step failed for ${name}: ${result.error} - uploading the original frame instead.`);
         logEvent("camera_raw", "fail", { file: name, message: result.error });
-        showNotification("Spidx Uploader — Camera Raw skipped", `${result.error} Uploading the original frame instead.`);
+        showNotification("Spidx Uploader - Camera Raw skipped", `${result.error} Uploading the original frame instead.`);
         addFileToBatch(fullPath);
     }
 }
@@ -1166,6 +1451,184 @@ function seedExistingFiles() {
 
 // A refused file is moved to incoming\\rejected (not deleted - the user can still
 // take it) and the user is told why. Remembered as processed so it isn't retried.
+/* ---------------------------------------------------------------------- */
+/*  Video-render allowance                                                  */
+/*                                                                          */
+/*  The free plan includes FREE_RENDERS_PER_MONTH "Render & upload" videos  */
+/*  per month (Premiere Pro, VEGAS Pro and After Effects all end up as a    */
+/*  video file in the incoming folder, so ONE place counts them). Pro /     */
+/*  tester / dev are unlimited. Stills are not counted.                    */
+/*                                                                          */
+/*  The COUNT lives on the licence server (per Google account AND per       */
+/*  computer, signed answers). render-usage.json is only a cache of the     */
+/*  server's answer for the panels and the Dashboard - editing it changes   */
+/*  what is DISPLAYED, never what the server allows. When the server        */
+/*  cannot be reached, up to OFFLINE_RENDERS_PER_MONTH renders are let      */
+/*  through and reported to the server later. A refused video is moved to   */
+/*  incoming\\rejected (never deleted) so a render is never lost.          */
+/* ---------------------------------------------------------------------- */
+const FREE_RENDERS_PER_MONTH = 15;          // display fallback only - the server decides
+const OFFLINE_RENDERS_PER_MONTH = 3;
+const RENDER_USAGE_FILE = path.join(__dirname, "render-usage.json");
+const licenseActions = require("./license-actions.js");
+const packContent = require("./pack-content.js");
+
+// Thumbnail Pack: who may have the content (the signed licence says so; the server decides again)
+function packEntitledLocal() {
+    const roles = Array.isArray(currentRoles) ? currentRoles : [];
+    return roles.includes("spt") || roles.includes("dev") || roles.includes("tester") || currentTier === "dev" || currentTier === "tester";
+}
+
+// Panel translations: the panels (After Effects, Premiere Pro, VEGAS Pro) cannot ask the helper for text, so the
+// dictionary of the language chosen in the Dashboard is written next to the engine status. Only changes are written.
+const PANEL_I18N_FILE = path.join(INCOMING, ".panel-i18n.json");
+let panelI18nLast = "";
+function writePanelI18n() {
+    try {
+        const language = i18n.currentLanguage();
+        const body = JSON.stringify({ language, strings: language === "en" ? {} : i18n.dictFor(language) });
+        if (body === panelI18nLast) return;
+        fs.mkdirSync(INCOMING, { recursive: true });
+        fs.writeFileSync(PANEL_I18N_FILE, body, "utf8");
+        panelI18nLast = body;
+    } catch (err) {
+        log(`Could not write the panel translations: ${err.message}`);
+    }
+}
+
+let packSyncBusy = false;
+async function syncPackNow() {
+    if (packSyncBusy) return;
+    packSyncBusy = true;
+    try {
+        await packContent.sync({ entitled: packEntitledLocal(), api: licenseActions, log });
+    } catch (err) {
+        log(`Thumbnail Pack sync failed: ${err.message}`);
+    } finally {
+        packSyncBusy = false;
+        writeEngineStatus();
+    }
+}
+
+// The Dashboard's "Sync now" button drops a marker file (it runs in another process).
+const PACK_SYNC_REQUEST_FILE = path.join(INCOMING, ".pack-sync-request");
+function checkPackSyncRequest() {
+    if (!fs.existsSync(PACK_SYNC_REQUEST_FILE)) return;
+    try { fs.unlinkSync(PACK_SYNC_REQUEST_FILE); } catch {}
+    syncPackNow();
+}
+
+function renderMonthKey(d = new Date()) {
+    return d.toISOString().slice(0, 7);      // UTC, the same month the server uses
+}
+
+function readRenderUsage() {
+    const month = renderMonthKey();
+    try {
+        const u = JSON.parse(fs.readFileSync(RENDER_USAGE_FILE, "utf8"));
+        if (u && u.month === month && Number.isFinite(u.count)) {
+            return {
+                month,
+                count: Math.max(0, Math.floor(u.count)),
+                offline: Math.max(0, Math.floor(Number(u.offline) || 0)),
+                pending: Array.isArray(u.pending) ? u.pending.map(String).slice(-50) : [],
+                files: Array.isArray(u.files) ? u.files.slice(-30) : []
+            };
+        }
+    } catch {}
+    return { month, count: 0, offline: 0, pending: [], files: [] };   // missing, unreadable or an older month
+}
+
+function saveRenderUsage(u) {
+    try {
+        const tmp = RENDER_USAGE_FILE + ".tmp";
+        fs.writeFileSync(tmp, JSON.stringify(u), "utf8");
+        fs.renameSync(tmp, RENDER_USAGE_FILE);
+    } catch (err) {
+        log(`Could not save the render counter: ${err.message}`);
+    }
+}
+
+function renderLimit() {
+    return tierAllowsProFeatures(currentTier) ? null : FREE_RENDERS_PER_MONTH;   // null = unlimited
+}
+
+function renderUsageSummary() {
+    const u = readRenderUsage();
+    const limit = renderLimit();
+    return { month: u.month, used: u.count, limit, unlimited: limit === null, remaining: limit === null ? null : Math.max(0, limit - u.count) };
+}
+
+// Pro: statistics only (nothing is enforced).
+function countRender(name) {
+    const u = readRenderUsage();
+    u.count += 1;
+    u.files.push(name);
+    saveRenderUsage(u);
+    writeEngineStatus();
+}
+
+// The server's signed answer becomes the displayed count.
+function applyServerUsage(res) {
+    const u = readRenderUsage();
+    u.count = res.used;
+    saveRenderUsage(u);
+    writeEngineStatus();
+}
+
+// A stable id for one rendered file: asking the server twice about the same file counts once.
+function renderKeyFor(name, st) {
+    return crypto.createHash("sha256").update(`${name}|${st.size}|${Math.floor(st.mtimeMs)}`).digest("hex").slice(0, 32);
+}
+
+const RENDER_LIMIT_TEXT = limit => `The free plan includes ${limit} video renders per month and they are used up. Pro has unlimited renders. The video is saved in incoming\\rejected.`;
+
+// -> { allowed: true } | { allowed: false, reason }
+async function decideRenderOnline(key) {
+    const res = await licenseActions.requestRenderPermit(key, true);
+    if (res.ok) {
+        applyServerUsage(res);
+        if (res.limit === null) return { allowed: true };   // the server says this account is unlimited
+        return res.allowed ? { allowed: true } : { allowed: false, reason: RENDER_LIMIT_TEXT(res.limit) };
+    }
+    // no answer we can trust: a few renders per month are let through and reported later
+    const u = readRenderUsage();
+    if (u.offline >= OFFLINE_RENDERS_PER_MONTH) {
+        return { allowed: false, reason: `The license server cannot be reached and the ${OFFLINE_RENDERS_PER_MONTH} offline renders of this month are used. Connect to the internet, then move the video from incoming\\rejected back into incoming.` };
+    }
+    u.offline += 1;
+    u.count += 1;
+    u.pending.push(key);
+    saveRenderUsage(u);
+    writeEngineStatus();
+    log(`License server not reachable (${res.message}) - letting this render through (${u.offline} of ${OFFLINE_RENDERS_PER_MONTH} offline).`);
+    return { allowed: true };
+}
+
+// Reports offline renders to the server and refreshes the displayed count. Safe to call any time.
+let renderSyncBusy = false;
+async function syncRenderUsage() {
+    if (renderSyncBusy || tierAllowsProFeatures(currentTier)) return;
+    renderSyncBusy = true;
+    try {
+        let u = readRenderUsage();
+        while (u.pending.length) {
+            const res = await licenseActions.requestRenderPermit(u.pending[0], true);
+            if (!res.ok) return;                        // still offline - try again next time
+            u = readRenderUsage();
+            u.pending.shift();
+            u.count = res.used;
+            saveRenderUsage(u);
+        }
+        const res = await licenseActions.requestRenderPermit("", false);
+        if (res.ok) applyServerUsage(res);
+    } catch (err) {
+        log(`Render usage sync failed: ${err.message}`);
+    } finally {
+        renderSyncBusy = false;
+    }
+}
+
 function rejectIncoming(fullPath, name, reason) {
     log(`Refused ${name}: ${reason}`);
     logEvent("incoming_gate", "rejected", { file: name, reason });
@@ -1186,6 +1649,7 @@ function scan() {
     try { files = fs.readdirSync(INCOMING); } catch { return; }
 
     checkCancelMarker();
+    checkUploadCancelMarker();
     checkForceSendMarker();
     checkPresetRequest();
 
@@ -1200,11 +1664,22 @@ function scan() {
         pending.add(name);
         const size1 = stat.size;
 
+        // A video is written for minutes by the host's renderer, so it must sit untouched for
+        // a few seconds before we call it finished (stills only need a short size check).
+        const video = isVideoFile(name);
         setTimeout(() => {
             pending.delete(name);
             try {
-                const size2 = fs.statSync(full).size;
+                const st2 = fs.statSync(full);
+                const size2 = st2.size;
                 if (size1 !== size2 || processed.has(name)) return;
+                if (!video && (size2 === 0 || Date.now() - st2.mtimeMs < 1200)) {
+                    // Still being written (Photoshop creates the file empty first, then fills it) -
+                    // never upload a half-written still; look again shortly.
+                    setTimeout(scheduleScan, 900);
+                    return;
+                }
+                if (video && !videoFileReady(full, st2)) return;   // still being rendered (or its MP4/MOV index is not written yet)
                 rememberProcessed(name);
                 saveState();
 
@@ -1214,29 +1689,55 @@ function scan() {
                     rejectIncoming(full, name, verdict.reason);
                     return;
                 }
-                let target = full;
-                if (verdict.cleanName !== name) {
-                    const cleanFull = path.join(INCOMING, verdict.cleanName);
-                    rememberProcessed(verdict.cleanName);
-                    saveState();
+                const acceptNow = () => {
                     try {
-                        if (fs.existsSync(cleanFull)) fs.unlinkSync(cleanFull);
-                        fs.renameSync(full, cleanFull);
-                        target = cleanFull;
+                        let target = full;
+                        if (verdict.cleanName !== name) {
+                            const cleanFull = path.join(INCOMING, verdict.cleanName);
+                            rememberProcessed(verdict.cleanName);
+                            saveState();
+                            try {
+                                if (fs.existsSync(cleanFull)) fs.unlinkSync(cleanFull);
+                                fs.renameSync(full, cleanFull);
+                                target = cleanFull;
+                            } catch (err) {
+                                log(`Could not strip the VEGAS tag from ${name}: ${err.message} - uploading it as is.`);
+                            }
+                        }
+                        const targetName = path.basename(target);
+                        fileMeta.set(targetName, { source: verdict.source, ps: false });
+
+                        if (isVideoFile(targetName)) {
+                            // A rendered video is its own upload: it never waits for / joins a batch of stills.
+                            log(`Video ready: ${targetName} (${(fs.statSync(target).size / 1048576).toFixed(0)} MB).`);
+                            enqueue([target], null);
+                        } else if (needsCameraRaw(targetName)) {
+                            routeThroughPhotoshop(target);
+                        } else {
+                            addFileToBatch(target);
+                        }
                     } catch (err) {
-                        log(`Could not strip the VEGAS tag from ${name}: ${err.message} - uploading it as is.`);
+                        log(`Could not accept ${name}: ${err.message}`);
+                    }
+                };
+                if (isVideoFile(verdict.cleanName)) {
+                    if (tierAllowsProFeatures(currentTier)) {
+                        countRender(verdict.cleanName);          // Pro: statistics only
+                    } else {
+                        // free plan: the license server counts the render (see the block near rejectIncoming)
+                        decideRenderOnline(renderKeyFor(name, st2)).then(decision => {
+                            if (!decision.allowed) { rejectIncoming(full, name, decision.reason); return; }
+                            acceptNow();
+                        }).catch(err => {
+                            log(`Render permit failed: ${err.message}`);
+                            rejectIncoming(full, name, "The video could not be checked against the free plan's monthly allowance. It is saved in incoming\\rejected.");
+                        });
+                        return;
                     }
                 }
-                const targetName = path.basename(target);
-                fileMeta.set(targetName, { source: verdict.source, ps: false });
-
-                if (needsCameraRaw(targetName)) {
-                    routeThroughPhotoshop(target);
-                } else {
-                    addFileToBatch(target);
-                }
+                acceptNow();
             } catch {}
-        }, 700);
+        }, video ? 6000 : 700);
     }
 }
 
@@ -1283,7 +1784,7 @@ async function checkGoogleSignInAndTier() {
         const email   = await timedStep("google_signin", {}, () => googleAuth.getUserEmail());
         const idToken = await timedStep("google_id_token", {}, () => googleAuth.getIdToken());
         const result  = await timedStep("license_check", { email }, () => license.checkTier(idToken, email));
-        log(`Signed in as ${email} — tier: ${result.tier}${result.deviceLimitReached ? " (device limit reached)" : ""}.`);
+        log(`Signed in as ${email} - tier: ${result.tier}${result.deviceLimitReached ? " (device limit reached)" : ""}.`);
         return result;
     } catch (err) {
         log("Could not sign in with Google (continuing as free):", err.message);
@@ -1295,8 +1796,29 @@ async function checkGoogleSignInAndTier() {
 /*  main()                                                               */
 /* ---------------------------------------------------------------------- */
 
+// Two engines watching the same incoming folder would each upload every file (= duplicates).
+// If another LIVE engine is already running, wait a little (a restart briefly overlaps), then give up.
+async function ensureSingleEngine() {
+    const alive = pid => { try { process.kill(pid, 0); return true; } catch (e) { return e.code === "EPERM"; } };
+    for (let i = 0; i < 20; i++) {
+        let other = null;
+        try {
+            const st = JSON.parse(fs.readFileSync(ENGINE_STATUS_FILE, "utf8"));
+            if (st && st.pid && st.pid !== process.pid && Date.now() - (st.updatedAt || 0) < 30000 && alive(st.pid)) other = st.pid;
+        } catch {}
+        if (!other) return true;
+        if (i === 0) console.log(`Another Spidx engine is still running (pid ${other}) - waiting for it to stop...`);
+        await new Promise(r => setTimeout(r, 500));
+    }
+    return false;
+}
+
 async function main() {
     ensureDirs();
+    if (!(await ensureSingleEngine())) {
+        console.log("Another Spidx engine is already running - this copy will not start (it would upload every file twice).");
+        process.exit(0);
+    }
     loadState();
     seedExistingFiles();
     config = loadConfig();
@@ -1304,7 +1826,7 @@ async function main() {
 
     console.log("");
     console.log("========================================");
-    console.log(`   SPIDX UPLOADER — ${ENGINE_NAME.toUpperCase()}`);
+    console.log(`   SPIDX UPLOADER - ${ENGINE_NAME.toUpperCase()}`);
     console.log("========================================");
     console.log("");
 
@@ -1328,13 +1850,15 @@ async function main() {
         currentRoles = Array.isArray(licenseResult.roles) && licenseResult.roles.length ? licenseResult.roles : [licenseResult.tier];
         currentDeviceLimitReached = licenseResult.deviceLimitReached;
         currentTrialDaysRemaining = licenseResult.trialDaysRemaining || null;
+        syncRenderUsage();                                  // free plan: show the SERVER's count and report offline renders
+        syncPackNow();                                      // Thumbnail Pack: download (or remove) the content for this account
     } catch (error) {
         // Free tier + WorkUpload is a perfectly usable fallback, and it
         // beats the old behaviour by a mile: this used to reject out of
         // main() and exit(1), so a flaky network on startup looked like
         // "the app is dead" rather than "you're on Free until it can
         // check again".
-        log(`Google sign-in / tier check failed: ${error.message} — continuing on free.`);
+        log(`Google sign-in / tier check failed: ${error.message} - continuing on free.`);
         setEngineState("error", `Sign-in failed: ${error.message}`);
         currentTier = "free";
         currentRoles = ["free"];
@@ -1344,7 +1868,7 @@ async function main() {
     }
 
     if (config.destination === "drive" && !tierAllowsDrive(currentTier)) {
-        log(`Drive not available on tier "${currentTier}" — using WorkUpload.`);
+        log(`Drive not available on tier "${currentTier}" - using WorkUpload.`);
         config.destination = "workupload";
     }
 
@@ -1361,16 +1885,23 @@ async function main() {
             await warmUpBrowser();
         }
     } catch (error) {
-        // Warm-up is an optimisation, not a requirement — the per-upload
+        // Warm-up is an optimisation, not a requirement - the per-upload
         // path opens what it needs anyway. Failing here used to abort
         // startup entirely.
-        log(`Warm-up failed (${error.message}) — will connect on the first upload instead.`);
+        log(`Warm-up failed (${error.message}) - will connect on the first upload instead.`);
     }
 
     setEngineState("ready");
-    log(`Ready. Watching for new files from Photoshop and After Effects — ${INCOMING}`);
+    log(`Ready. Watching for new files from Photoshop and After Effects - ${INCOMING}`);
 
     setInterval(scan, POLL_MS);
+    setInterval(checkLeaderboardRequest, 400);
+    setInterval(syncRenderUsage, 30 * 60 * 1000);
+    setInterval(syncPackNow, 6 * 60 * 60 * 1000);      // Thumbnail Pack: new versions arrive on their own
+    setInterval(checkPackSyncRequest, 1000);
+    setInterval(checkRetryFailedRequest, 1000);
+    writePanelI18n();
+    setInterval(writePanelI18n, 30 * 1000);            // a language change in the Dashboard reaches the panels within seconds   // free plan: keep the displayed count in step with the server   // cheap existsSync; keeps the panel's Leaderboard snappy
     startWatching();
     scan();
     cleanupOldFiles();
@@ -1396,7 +1927,7 @@ main().catch(err => {
     console.error(err);
     try { setEngineState("error", err && err.message ? err.message : String(err)); } catch {}
     try { startHeartbeat(); } catch {}
-    log("Startup did not complete — see the error above. The engine stays up so you can fix it without restarting.");
+    log("Startup did not complete - see the error above. The engine stays up so you can fix it without restarting.");
 });
 
 process.on("unhandledRejection", reason => {

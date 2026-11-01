@@ -1,10 +1,10 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <ExtensionManifest Version="7.0" ExtensionBundleId="com.spidx.uploader.ppro"
-                   ExtensionBundleVersion="2.8.0"
+                   ExtensionBundleVersion="3.0.2"
                    ExtensionBundleName="Spidx Uploader"
                    xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
     <ExtensionList>
-        <Extension Id="com.spidx.uploader.ppro.panel" Version="2.8.0"/>
+        <Extension Id="com.spidx.uploader.ppro.panel" Version="3.0.2"/>
     </ExtensionList>
 
     <ExecutionEnvironment>
@@ -35,7 +35,7 @@
                         <!-- Same reason as the AE panel: the Leaderboard tab fetches
                              SpidxTracker's API host directly, which needs CORS
                              disabled inside CEP's embedded Chromium. -->
-                        <Parameter>--disable-web-security</Parameter>
+                        
                     </CEFCommandLine>
                 </Resources>
                 <Lifecycle>

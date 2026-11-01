@@ -1,6 +1,6 @@
 ' Run this once to add a "Spidx Uploader" icon to your Desktop.
 ' Double-clicking that icon afterwards starts the app silently in the
-' background (no console window) — same as running "Spidx Uploader.vbs"
+' background (no console window) - same as running "Spidx Uploader.vbs"
 ' directly, just with a proper icon you can also pin to Start/Taskbar.
 
 Set fso = CreateObject("Scripting.FileSystemObject")
@@ -23,7 +23,7 @@ link.WorkingDirectory = rootDir & "\App"
 If fso.FileExists(iconPath) Then
     link.IconLocation = iconPath
 End If
-link.Description = "Spidx Uploader — starts in the background, no window"
+link.Description = "Spidx Uploader - starts in the background, no window"
 link.Save
 
 MsgBox "Done! A 'Spidx Uploader' icon was added to your Desktop." & vbCrLf & _

@@ -1,16 +1,16 @@
-Spidx Uploader — Premiere Pro port
+Spidx Uploader - Premiere Pro port
 ===================================
 
 This is a port of CEP-AE (the After Effects panel) to Premiere Pro.
 It's a separate CEP extension bundle (com.spidx.uploader.ppro) that
-installs and runs independently of the AE panel — you can have both
+installs and runs independently of the AE panel - you can have both
 installed at once, on the same machine, pointed at the same App\incoming
 folder, and the Spider Engine (App/server.js) serves both without any
 changes on its side.
 
 Install
 -------
-1. Read PRESET-SETUP.txt FIRST and create pngframe.epr — the panel
+1. Read PRESET-SETUP.txt FIRST and create pngframe.epr - the panel
    can't export a frame without it (see "What had to change" below).
 2. Close Premiere Pro.
 3. Run "Install PPRO Panel.bat".
@@ -22,45 +22,45 @@ What's identical to the AE panel
 ---------------------------------
 - The whole batch/engine-status protocol: .batch-config.json,
   .batch-status.json, .engine-status.json, .batch-force-send,
-  .batch-cancel — byte-for-byte the same files, same folder.
+  .batch-cancel - byte-for-byte the same files, same folder.
 - The UI shell: same look, same Uploader tab, same tier badge, batch
   selector, Drive folder-name field.
 - The Leaderboard tab's data fetching, table, search, region filter and
-  "Copy Nick" button — all pure client-side JS, host-independent.
-- client/index.js's structure for the Uploader tab — a near line-for-
+  "Copy Nick" button - all pure client-side JS, host-independent.
+- client/index.js's structure for the Uploader tab - a near line-for-
   line port of CEP-AE/client/index.js, only renamed keys/labels.
 
 What had to change
 -------------------
 1. Frame export (host/spidx.jsx spidxSaveFrame). After Effects has
-   CompItem.saveFrameToPng() — a single call, no setup. Premiere Pro's
+   CompItem.saveFrameToPng() - a single call, no setup. Premiere Pro's
    DOM has no equivalent method on Sequence; confirmed against Adobe's
    own Scripting Guide. The scripted route is: set in/out points to the
    current frame, then Sequence.exportAsMediaDirect(path, presetPath,
    ENCODE_IN_TO_OUT) with a PNG export preset (.epr). That preset is
-   not something a script can generate — it has to come from Premiere's
+   not something a script can generate - it has to come from Premiere's
    own Export Media dialog once. This is an Adobe API limitation, not a
    design choice on this port's part. See PRESET-SETUP.txt.
 
-2. Leaderboard "Insert + Essential Graphics" button — replaced with a
+2. Leaderboard "Insert + Essential Graphics" button - replaced with a
    new Properties tab, not just a clipboard workaround. Premiere Pro
    DOES have a scriptable route into a selected Graphics/MOGRT clip's
    Essential Graphics text fields: TrackItem.getMGTComponent() +
    ComponentParam.getValue()/.setValue() (confirmed against Adobe's
-   forum, since this specific call isn't in the official docs — see the
+   forum, since this specific call isn't in the official docs - see the
    long comment above spidxSelectedGraphicsClip() in host/spidx.jsx for
    the two real version-dependent quirks it works around). The
    Properties tab tracks the Timeline selection automatically (same
-   POLL_MS interval the Uploader tab already uses for engine status —
+   POLL_MS interval the Uploader tab already uses for engine status -
    no manual Refresh needed): select a Graphics clip, pick a detected
    text property, pick a nick from Leaderboard (or type one), click
    Apply. It writes straight into the MOGRT the way the AE version
    wrote into a text layer. Treat it as best-effort per .mogrt rather
-   than guaranteed — Adobe's own forum shows this API's exact value
+   than guaranteed - Adobe's own forum shows this API's exact value
    shape changing across Premiere versions.
 
 3. The native Program Monitor "Export Frame" button (camera icon,
-   Ctrl+Shift+E) is NOT scriptable — confirmed on Adobe's own forum
+   Ctrl+Shift+E) is NOT scriptable - confirmed on Adobe's own forum
    (an Adobe engineer's answer to "is it possible to export a frame
    using the SDK" points to exportAsMediaDirect + a preset; the more
    obvious-looking exportFramePNG() is widely reported as returning
@@ -78,8 +78,8 @@ Files
 CSXS/manifest.xml        Extension manifest (PPRO host)
 client/index.html        Panel UI (Uploader / Leaderboard / Properties tabs)
 client/index.js          Panel logic
-host/spidx.jsx           ExtendScript host — frame export + MOGRT properties
-presets/                 Optional — a copy of pngframe.epr here still works, but is no longer required (see PRESET-SETUP.txt)
+host/spidx.jsx           ExtendScript host - frame export + MOGRT properties
+presets/                 Optional - a copy of pngframe.epr here still works, but is no longer required (see PRESET-SETUP.txt)
 icons/                   Reused from the AE panel
 Install PPRO Panel.bat   Installer (PlayerDebugMode + copy to CEP extensions)
 PRESET-SETUP.txt         One-time PNG preset setup, read this first
@@ -101,7 +101,7 @@ clip - add an empty track if it says none is free).
 
 THE NICK: if a nick is typed in the box (or clicked on the Leaderboard tab) it is
 written into the graphic. Which text field gets it is set per template in
-mogrts\mogrts.json with "textParam" - the field's name exactly as Essential
+the Pack's mogrts.json with "textParam" - the field's name exactly as Essential
 Graphics shows it (e.g. "Change Name", "big vicobuca", "190 Damage"), or its
 position among the text fields ("2"). Without it the panel guesses: a field named
 like a nick/name/player, else the LAST text field. Writing the nick needs Pro
@@ -115,18 +115,16 @@ Roles COMBINE: the license server (Apps Script) sends one signed value per user 
 MOGRT tab). Separators + , | or space; the badge shows "PRO + SPT". Ranks (free < pro <
 tester < dev) decide Drive, 2-3 files per upload and Photoshop + Upload; "spt" is not a
 rank, so a user with only "spt" counts as free for all of that.
-NOTE: the templates ship inside this panel, so this is a licence gate, not copy
-protection.
+WHERE THE TEMPLATES COME FROM: since 3.0 the MOGRT templates are NOT inside this panel or the installer.
+The helper (Spider Engine 3) downloads them from the licence server into
+%APPDATA%\Spidx Uploader\pack\ppro\mogrts, only for an account that has the Thumbnail Pack (SPT role,
+or a dev / tester rank), and removes them again if the account loses it. Nothing to install by hand:
+open the Dashboard > Templates and press "Sync now" to fetch updates at once.
+If the tab is empty: the account has no Thumbnail Pack, or the helper has not finished downloading.
 
-Adding templates: drop .mogrt files into the mogrts\ folder, run
-"Update MOGRT list.bat" (it pulls each template's preview picture + animated
-preview out of the file and updates mogrts\mogrts.json), then reinstall the panel.
-In mogrts.json you can rename a template, give it a description, a "category" and
-the "textParam" above.
+Adding templates (for the Pack owner): see Tools\PACK-README.txt - they are uploaded to the private
+Drive folder and every account with the Pack receives them.
 
-If the tab says "mogrts folder is missing", the panel was installed without its
-mogrts\ folder: reinstall it (Dashboard > Plugins > Premiere Pro > Reinstall, or
-"Install PPRO Panel.bat").
 
 ------------------------------------------------------------------------
 Settings & tier (v1.1.1)

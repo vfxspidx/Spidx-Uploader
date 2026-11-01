@@ -3,6 +3,7 @@
 const path = require("path");
 const fs = require("fs");
 const { spawn } = require("child_process");
+const i18n = require("./i18n.js");
 
 const APP_DIR = __dirname;
 const SERVER_SCRIPT = path.join(APP_DIR, "server.js");
@@ -31,7 +32,7 @@ const MAX_LOG_BYTES = 2 * 1024 * 1024; // rotate the log once it gets past 2 MB
 
 // The tray ICON is a convenience; the helper is the product. Every
 // failure path below therefore degrades to "no icon, helper still
-// running" instead of exiting — an exit here is what made the app look
+// running" instead of exiting - an exit here is what made the app look
 // completely dead ("Tray app has stopped.") when all that was actually
 // broken was systray2's little helper binary (a missing install, an
 // antivirus quarantine, or a blocked temp folder).
@@ -41,7 +42,7 @@ try {
     SysTrayLib = SysTrayLib.default || SysTrayLib;
 } catch (error) {
     SysTrayLib = null;
-    console.error(`[TRAY] Tray icon package unavailable (${error.message}) — running without a tray icon.`);
+    console.error(`[TRAY] Tray icon package unavailable (${error.message}) - running without a tray icon.`);
 }
 
 let trayAvailable = false;
@@ -90,14 +91,17 @@ function appendLog(text) {
 }
 
 function escapeForPowerShellDoubleQuoted(text) {
+    // PowerShell treats the typographic double quotes (U+201C-U+201F, common in
+    // translated text such as German/Polish) as string delimiters too, so they
+    // get the same backtick escape as a plain ".
     return String(text)
         .replace(/`/g, "``")
-        .replace(/"/g, '`"')
+        .replace(/["\u201C\u201D\u201E\u201F]/g, m => "`" + m)
         .replace(/\$/g, "`$");
 }
 
 // How many times to retry a pending code before giving up (each retry is
-// one tick of the 4s interval below, so ~20s total) — covers the normal
+// one tick of the 4s interval below, so ~20s total) - covers the normal
 // "helper just started, still signing in to Google" window without
 // retrying forever if the person was never signed in at all.
 const PENDING_CODE_MAX_ATTEMPTS = 5;
@@ -135,7 +139,7 @@ async function checkPendingLicenseCode() {
     }
 
     // "Could not get a Google sign-in token" is the one failure worth
-    // retrying — it means the helper (or the sign-in flow) is still
+    // retrying - it means the helper (or the sign-in flow) is still
     // starting up. Anything else (bad code, already redeemed, server
     // unreachable) won't fix itself by waiting.
     const looksLikeStillStarting = !result.ok && /sign-in token/i.test(result.message || "");
@@ -148,14 +152,16 @@ async function checkPendingLicenseCode() {
     pendingCodeAttempts = 0;
 
     if (result.ok) {
-        const tierText = result.tier ? result.tier.toUpperCase() : "your new";
+        const tierText = result.tier ? result.tier.toUpperCase() : "";
         appendLog(`[TRAY] License code activated from Discord link - tier: ${result.tier}\n`);
-        showMessageBox("Spidx Uploader", `License activated! You're now on the ${tierText} tier.`);
+        showMessageBox("Spidx Uploader", tierText
+            ? i18n.t("License activated! You're now on the {tier} tier.", { tier: tierText })
+            : i18n.t("License activated! You're now on your new tier."));
         // Force a fresh tier check right away (cache is already cleared).
         restartHelperWhenIdle();
     } else {
         appendLog(`[TRAY] Pending license code failed: ${result.message}\n`);
-        showMessageBox("Spidx Uploader", `Couldn't activate that license code: ${result.message}\n\nYou can also paste it directly in Dashboard > Account.`);
+        showMessageBox("Spidx Uploader", i18n.t("Couldn't activate that license code: {message}\n\nYou can also paste it directly in Dashboard > Account.", { message: result.message }));
     }
 }
 
@@ -184,7 +190,7 @@ function restartHelperWhenIdle() {
 }
 
 // Small confirmation popup for menu actions that would otherwise be
-// silent (e.g. "Change incoming folder…" just drops a marker file — with
+// silent (e.g. "Change incoming folder…" just drops a marker file - with
 // no visible feedback, clicking it looks like it did nothing at all).
 function showMessageBox(title, message) {
     const t = escapeForPowerShellDoubleQuoted(title);
@@ -193,10 +199,14 @@ function showMessageBox(title, message) {
         "Add-Type -AssemblyName System.Windows.Forms | Out-Null; " +
         `[System.Windows.Forms.MessageBox]::Show("${m}", "${t}", 'OK', 'Information') | Out-Null`;
 
+    // UTF-16LE base64 so translated (non-ASCII) text reaches PowerShell intact,
+    // independent of the console code page and of command-line quoting rules.
+    const encodedScript = Buffer.from(script, "utf16le").toString("base64");
+
     try {
         const proc = spawn(
             "powershell",
-            ["-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-Command", script],
+            ["-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-EncodedCommand", encodedScript],
             { windowsHide: true, detached: true }
         );
         proc.on("error", error => appendLog(`[TRAY] Could not show message box: ${error.message}\n`));
@@ -220,11 +230,11 @@ function startHelper() {
 
     status = "running";
     updateMenu();
-    appendLog(`\n[TRAY] Starting helper — ${new Date().toISOString()}\n`);
+    appendLog(`\n[TRAY] Starting helper - ${new Date().toISOString()}\n`);
 
     // process.execPath = the exact node.exe already running this tray app,
     // so there's no need to re-detect Node's location like start-helper.bat
-    // does — we already know it.
+    // does - we already know it.
     child = spawn(process.execPath, [SERVER_SCRIPT], {
         cwd: APP_DIR,
         windowsHide: true
@@ -234,7 +244,7 @@ function startHelper() {
     child.stderr.on("data", data => appendLog(data.toString()));
 
     child.on("exit", code => {
-        appendLog(`[TRAY] Helper exited (code ${code}) — ${new Date().toISOString()}\n`);
+        appendLog(`[TRAY] Helper exited (code ${code}) - ${new Date().toISOString()}\n`);
         child = null;
         status = code === 0 || code === null ? "stopped" : "error";
         updateMenu();
@@ -250,7 +260,7 @@ function startHelper() {
                 appendLog(`[TRAY] Restarting the helper in ${Math.round(delay / 1000)}s (crash ${crashCount}/${MAX_CRASH_RESTARTS}).\n`);
                 setTimeout(() => { if (!child) startHelper(); }, delay);
             } else {
-                appendLog("[TRAY] Helper keeps crashing — giving up on auto-restart. Open the log to see why.\n");
+                appendLog("[TRAY] Helper keeps crashing - giving up on auto-restart. Open the log to see why.\n");
             }
         }
     });
@@ -266,7 +276,7 @@ function startHelper() {
 function stopHelper() {
     stopRequested = true;
     if (!child) return;
-    appendLog(`[TRAY] Stopping helper — ${new Date().toISOString()}\n`);
+    appendLog(`[TRAY] Stopping helper - ${new Date().toISOString()}\n`);
     try {
         child.kill();
     } catch {}
@@ -294,7 +304,7 @@ function hasLastUpload() {
 }
 
 function escapePS(text) {
-    return String(text).replace(/`/g, "``").replace(/"/g, '`"').replace(/\$/g, "`$");
+    return escapeForPowerShellDoubleQuoted(text);
 }
 
 function runClipboardCmd(cmd, args, stdinText) {
@@ -356,23 +366,23 @@ function toggleAutostart() {
 /* ---------------------------------------------------------------------- */
 
 function statusLabel() {
-    if (status === "running") return "Running";
-    if (status === "error") return "Stopped (error — check log)";
-    return "Stopped";
+    if (status === "running") return i18n.t("Running");
+    if (status === "error") return i18n.t("Stopped (error - check log)");
+    return i18n.t("Stopped");
 }
 
 // Each entry's position in this array is its seq_id, matching what
 // node-systray reports back in onClick. Keep the order stable.
 function itemDefs() {
     return [
-        { key: "status", title: `Status: ${statusLabel()}`, enabled: false },
+        { key: "status", title: i18n.t("Status: {status}", { status: statusLabel() }), enabled: false },
         // ALWAYS present (hidden until an update exists). The tray binary fixes the
         // item list when it starts and reports clicks by position, so the list must
-        // never grow/shrink later — adding this item on the fly used to shift every
+        // never grow/shrink later - adding this item on the fly used to shift every
         // index below it and make clicks trigger the wrong menu entry.
         {
             key: "checkUpdate",
-            title: updateInfo.hasUpdate ? `\u2B06 Update available \u2014 ${updateInfo.latestVersion}` : "Update available",
+            title: updateInfo.hasUpdate ? i18n.t("\u2B06 Update available - {version}", { version: updateInfo.latestVersion }) : i18n.t("Update available"),
             enabled: !!updateInfo.hasUpdate,
             hidden: !updateInfo.hasUpdate
         },
@@ -380,31 +390,31 @@ function itemDefs() {
         // reason as the app-update item above (stable positions).
         {
             key: "pluginUpdates",
-            title: pluginUpdateInfo.hasUpdates ? "\u2B06 Plugin updates available \u2014 open Dashboard" : "Plugin updates",
+            title: pluginUpdateInfo.hasUpdates ? i18n.t("\u2B06 Plugin updates available - open Dashboard") : i18n.t("Plugin updates"),
             enabled: !!pluginUpdateInfo.hasUpdates,
             hidden: !pluginUpdateInfo.hasUpdates
         },
         { separator: true },
-        { key: "start", title: "Start helper", enabled: status !== "running" },
-        { key: "stop", title: "Stop helper", enabled: status === "running" },
-        { key: "restart", title: "Restart helper", enabled: status === "running" },
+        { key: "start", title: i18n.t("Start helper"), enabled: status !== "running" },
+        { key: "stop", title: i18n.t("Stop helper"), enabled: status === "running" },
+        { key: "restart", title: i18n.t("Restart helper"), enabled: status === "running" },
         { separator: true },
-        { key: "changeFolder", title: "Change incoming folder\u2026", enabled: true },
-        { key: "openLog", title: "Open log", enabled: true },
-        { key: "diagnostics", title: "Create diagnostics file\u2026", enabled: true },
-        { key: "copyLastLink", title: "Copy last upload link", enabled: hasLastUpload() },
+        { key: "changeFolder", title: i18n.t("Change incoming folder\u2026"), enabled: true },
+        { key: "openLog", title: i18n.t("Open log"), enabled: true },
+        { key: "diagnostics", title: i18n.t("Create diagnostics file\u2026"), enabled: true },
+        { key: "copyLastLink", title: i18n.t("Copy last upload link"), enabled: hasLastUpload() },
         { separator: true },
-        { key: "dashboard", title: "Open Dashboard", enabled: true },
+        { key: "dashboard", title: i18n.t("Open Dashboard"), enabled: true },
         { separator: true },
-        { key: "resetDriveLogin", title: "Reset Google sign-in", enabled: true },
+        { key: "resetDriveLogin", title: i18n.t("Reset Google sign-in"), enabled: true },
         { separator: true },
         {
             key: "autostart",
-            title: isAutostartEnabled() ? "\u2713 Start with Windows" : "Start with Windows",
+            title: isAutostartEnabled() ? i18n.t("\u2713 Start with Windows") : i18n.t("Start with Windows"),
             enabled: true
         },
         { separator: true },
-        { key: "quit", title: "Quit", enabled: true }
+        { key: "quit", title: i18n.t("Quit"), enabled: true }
     ];
 }
 
@@ -422,7 +432,7 @@ function updateMenu() {
     if (!systray) return;
     currentDefs = itemDefs();
     if (!trayReady) {
-        // The tray's underlying process hasn't finished starting yet —
+        // The tray's underlying process hasn't finished starting yet -
         // sendAction would throw. Remember to push this once it's ready.
         pendingMenuUpdate = true;
         return;
@@ -455,10 +465,10 @@ function handleClick(seqId) {
             try {
                 fs.mkdirSync(INCOMING_DIR, { recursive: true });
                 fs.writeFileSync(path.join(INCOMING_DIR, RESET_MARKER_NAME), "");
-                appendLog(`[TRAY] Folder change requested — open the Spidx panel in Photoshop to pick a new folder.\n`);
+                appendLog(`[TRAY] Folder change requested - open the Spidx panel in Photoshop to pick a new folder.\n`);
                 showMessageBox(
                     "Spidx Uploader",
-                    "Folder change requested.\n\nOpen (or switch to) the Spidx panel in Photoshop — it will ask you to pick a new folder within a few seconds, or the next time you click Upload."
+                    i18n.t("Folder change requested.\n\nOpen (or switch to) the Spidx panel in Photoshop - it will ask you to pick a new folder within a few seconds, or the next time you click Upload.")
                 );
             } catch (error) {
                 appendLog(`[TRAY] Could not request a folder change: ${error.message}\n`);
@@ -482,7 +492,7 @@ function handleClick(seqId) {
                     const { buildDiagnostics } = require("./diagnostics.js");
                     const result = await buildDiagnostics(msg => appendLog(`[TRAY][Diagnostics] ${msg}\n`));
                     if (!result.ok) {
-                        showMessageBox("Spidx Uploader", `Could not create the diagnostics file: ${result.message}`);
+                        showMessageBox("Spidx Uploader", i18n.t("Could not create the diagnostics file: {message}", { message: result.message }));
                         return;
                     }
                     try {
@@ -490,10 +500,10 @@ function handleClick(seqId) {
                         child.on("error", () => {});
                         child.unref();
                     } catch {}
-                    showMessageBox("Spidx Uploader", `Diagnostics file created (${result.summary.fail} failed, ${result.summary.warn} warning checks).\n\nSend this file to support:\n${result.path}`);
+                    showMessageBox("Spidx Uploader", i18n.t("Diagnostics file created ({fail} failed, {warn} warning checks).\n\nSend this file to support:\n{path}", { fail: result.summary.fail, warn: result.summary.warn, path: result.path }));
                 } catch (error) {
                     appendLog(`[TRAY] Diagnostics failed: ${error.message}\n`);
-                    showMessageBox("Spidx Uploader", `Could not create the diagnostics file: ${error.message}`);
+                    showMessageBox("Spidx Uploader", i18n.t("Could not create the diagnostics file: {message}", { message: error.message }));
                 }
             })();
             break;
@@ -501,13 +511,13 @@ function handleClick(seqId) {
             (async () => {
                 const last = readLastUpload();
                 if (!last || !Array.isArray(last.links) || last.links.length === 0) {
-                    showMessageBox("Spidx Uploader", "No upload link saved yet.");
+                    showMessageBox("Spidx Uploader", i18n.t("No upload link saved yet."));
                     return;
                 }
                 const ok = await copyTextToClipboard(last.links.join("\n"));
                 if (!ok) {
                     appendLog(`[TRAY] Could not copy last upload link to clipboard.\n`);
-                    showMessageBox("Spidx Uploader", "Could not copy the link to the clipboard.");
+                    showMessageBox("Spidx Uploader", i18n.t("Could not copy the link to the clipboard."));
                 }
             })();
             break;
@@ -518,11 +528,11 @@ function handleClick(seqId) {
                 openDashboard(msg => appendLog(`[TRAY][Dashboard] ${msg}\n`), {
                     isRunning: () => status === "running",
                     restartHelper: () => {
-                        appendLog(`[TRAY] Restarting helper (requested by Dashboard) — ${new Date().toISOString()}\n`);
+                        appendLog(`[TRAY] Restarting helper (requested by Dashboard) - ${new Date().toISOString()}\n`);
                         restartHelper();
                     },
                     quitApp: () => {
-                        appendLog(`[TRAY] Logging out (requested by Dashboard) — relaunching fresh, then quitting — ${new Date().toISOString()}\n`);
+                        appendLog(`[TRAY] Logging out (requested by Dashboard) - relaunching fresh, then quitting - ${new Date().toISOString()}\n`);
                         stopHelper();
                         // Logout just deleted google-token.json, which would
                         // otherwise make the relaunched process think this is
@@ -530,7 +540,7 @@ function handleClick(seqId) {
                         // the full first-run wizard (sign-in + destination +
                         // panel installs) until someone clicks all the way
                         // through it in a browser tab. This marker tells the
-                        // next main() to skip straight to startHelper() —
+                        // next main() to skip straight to startHelper() -
                         // the normal Google sign-in prompt still happens on
                         // its own via google-auth.js once the helper starts.
                         try { fs.writeFileSync(SKIP_WIZARD_MARKER, ""); } catch (err) {
@@ -540,16 +550,16 @@ function handleClick(seqId) {
                             // Was: wscript.exe running start-tray-hidden.vbs,
                             // which runs start-tray.bat, which finally starts
                             // node. That chain goes through a script file
-                            // (start-tray-hidden.vbs) that — unlike the main
+                            // (start-tray-hidden.vbs) that - unlike the main
                             // Spidx Uploader.vbs a user double-clicks and
-                            // Windows learns to trust over time — had never
+                            // Windows learns to trust over time - had never
                             // been executed before on a fresh install, which
                             // is exactly when Windows SmartScreen/Defender is
                             // most likely to throw up a silent scan/warning
                             // on first run and stall the whole relaunch for
                             // minutes with no visible sign anything is wrong.
-                            // Spawning node directly on tray.js — the same
-                            // way startHelper() already spawns server.js —
+                            // Spawning node directly on tray.js - the same
+                            // way startHelper() already spawns server.js -
                             // skips wscript.exe, the .vbs and the .bat
                             // entirely, so there's no script layer left for
                             // Windows to flag.
@@ -570,22 +580,17 @@ function handleClick(seqId) {
                 });
             } catch (error) {
                 appendLog(`[TRAY] Could not open the dashboard: ${error.message}\n`);
-                showMessageBox("Spidx Uploader", `Could not open the dashboard: ${error.message}`);
+                showMessageBox("Spidx Uploader", i18n.t("Could not open the dashboard: {message}", { message: error.message }));
             }
             break;
         case "checkUpdate":
-            if (updateInfo.installerAssetUrl) {
-                const { downloadAndRunInstaller, openReleasePage } = require("./update-check.js");
-                appendLog(`[TRAY] Downloading update installer (${updateInfo.installerAssetName})...\n`);
-                downloadAndRunInstaller(updateInfo)
-                    .then(savedTo => appendLog(`[TRAY] Update installer launched from ${savedTo}.\n`))
-                    .catch(error => {
-                        appendLog(`[TRAY] Could not download the installer (${error.message}); opening the release page instead.\n`);
-                        if (updateInfo.downloadUrl) openReleasePage(updateInfo.downloadUrl, msg => appendLog(`[TRAY] ${msg}\n`));
-                    });
-            } else if (updateInfo.downloadUrl) {
-                const { openReleasePage } = require("./update-check.js");
-                openReleasePage(updateInfo.downloadUrl, msg => appendLog(`[TRAY] ${msg}\n`));
+            // The Updater window shows the version, downloads with progress and starts the installer.
+            try {
+                const { openDashboard } = require("./dashboard.js");
+                openDashboard(msg => appendLog(`[TRAY][Updater] ${msg}\n`), { page: "updater" });
+            } catch (err) {
+                appendLog(`[TRAY] Could not open the Updater: ${err.message}\n`);
+                if (updateInfo.downloadUrl) require("./update-check.js").openReleasePage(updateInfo.downloadUrl, msg => appendLog(`[TRAY] ${msg}\n`));
             }
             break;
         case "autostart":
@@ -596,24 +601,24 @@ function handleClick(seqId) {
                 const existed = fs.existsSync(GOOGLE_TOKEN_FILE);
                 if (existed) fs.unlinkSync(GOOGLE_TOKEN_FILE);
                 if (fs.existsSync(LICENSE_CACHE_FILE)) fs.unlinkSync(LICENSE_CACHE_FILE);
-                appendLog(`[TRAY] Google sign-in + tier cache reset (login existed: ${existed}) — ${new Date().toISOString()}\n`);
+                appendLog(`[TRAY] Google sign-in + tier cache reset (login existed: ${existed}) - ${new Date().toISOString()}\n`);
 
                 if (status === "running") {
                     showMessageBox(
                         "Spidx Uploader",
-                        "Google sign-in reset (this also affects Drive uploads and your Free/Pro tier check). Restarting the helper now — your browser will open for a fresh login."
+                        i18n.t("Google sign-in reset (this also affects Drive uploads and your Free/Pro tier check). Restarting the helper now - your browser will open for a fresh login.")
                     );
                     restartHelper();
                 } else {
                     showMessageBox(
                         "Spidx Uploader",
-                        "Google sign-in reset. Starting the helper now — your browser will open for a fresh login."
+                        i18n.t("Google sign-in reset. Starting the helper now - your browser will open for a fresh login.")
                     );
                     startHelper();
                 }
             } catch (error) {
                 appendLog(`[TRAY] Could not reset Google sign-in: ${error.message}\n`);
-                showMessageBox("Spidx Uploader", `Could not reset the Google sign-in: ${error.message}`);
+                showMessageBox("Spidx Uploader", i18n.t("Could not reset the Google sign-in: {message}", { message: error.message }));
             }
             break;
         case "quit":
@@ -632,7 +637,7 @@ function handleClick(seqId) {
 /* ---------------------------------------------------------------------- */
 
 // Brings up the tray icon, or reports why it couldn't and returns false.
-// Never throws — see the SysTrayLib comment at the top.
+// Never throws - see the SysTrayLib comment at the top.
 async function startTrayIcon() {
     if (!SysTrayLib) return false;
 
@@ -640,7 +645,7 @@ async function startTrayIcon() {
     try {
         iconBase64 = fs.readFileSync(ICON_PATH).toString("base64");
     } catch (error) {
-        appendLog(`[TRAY] Could not read the tray icon (${error.message}) — running without an icon.\n`);
+        appendLog(`[TRAY] Could not read the tray icon (${error.message}) - running without an icon.\n`);
         return false;
     }
 
@@ -650,7 +655,7 @@ async function startTrayIcon() {
                 icon: iconBase64,
                 title: "",
                 tooltip: "Spidx Uploader Helper",
-                items: buildTrayItems(currentDefs)
+                items: buildTrayItems(currentDefs = itemDefs())
             },
             debug: false,
             copyDir: true
@@ -660,7 +665,7 @@ async function startTrayIcon() {
 
         if (typeof systray.ready === "function") {
             // systray2's ready() can hang forever if its bundled binary
-            // was quarantined or blocked — a hang here used to mean the
+            // was quarantined or blocked - a hang here used to mean the
             // helper never started at all, so it's raced against a
             // timeout and treated as "no icon" if it loses.
             await Promise.race([
@@ -679,7 +684,7 @@ async function startTrayIcon() {
         }
         return true;
     } catch (error) {
-        appendLog(`[TRAY] Tray icon unavailable (${error.message}) — the helper itself will still run.\n`);
+        appendLog(`[TRAY] Tray icon unavailable (${error.message}) - the helper itself will still run.\n`);
         try { if (systray && typeof systray.kill === "function") systray.kill(false); } catch {}
         systray = null;
         trayReady = false;
@@ -710,7 +715,7 @@ function isProcessAlive(pid) {
         process.kill(pid, 0); // signal 0: existence/permission check only, doesn't actually signal anything
         return true;
     } catch (error) {
-        return error.code === "EPERM"; // exists, just not ours to signal — still alive
+        return error.code === "EPERM"; // exists, just not ours to signal - still alive
     }
 }
 
@@ -721,7 +726,7 @@ function otherInstanceRunning() {
     try {
         existingPid = parseInt(fs.readFileSync(PID_FILE, "utf8").trim(), 10);
         ageMs = Date.now() - fs.statSync(PID_FILE).mtimeMs;
-    } catch { /* no PID file yet — first run, or a cleared one */ }
+    } catch { /* no PID file yet - first run, or a cleared one */ }
 
     return !!(existingPid && existingPid !== process.pid && isProcessAlive(existingPid) && ageMs < HEARTBEAT_STALE_MS);
 }
@@ -761,8 +766,8 @@ function claimSingleInstance() {
 
 async function main() {
     if (await anotherCopyIsRunning()) {
-        appendLog(`\n[TRAY] Another copy is already running — exiting this extra launch — ${new Date().toISOString()}\n`);
-        showMessageBox("Spidx Uploader", "Spidx Uploader is already running — check your system tray.");
+        appendLog(`\n[TRAY] Another copy is already running - exiting this extra launch - ${new Date().toISOString()}\n`);
+        showMessageBox("Spidx Uploader", i18n.t("Spidx Uploader is already running - check your system tray."));
         // The keep-alive interval at the top of this file would otherwise leave
         // this extra process alive (invisible) forever. Give the message box a
         // moment to spawn, then exit for real.
@@ -771,7 +776,7 @@ async function main() {
     }
     claimSingleInstance();
 
-    appendLog(`\n[TRAY] Launcher started — ${new Date().toISOString()}\n`);
+    appendLog(`\n[TRAY] Launcher started - ${new Date().toISOString()}\n`);
 
     // Make sure the Discord "Activate" button (spidx://activate?code=...)
     // opens THIS copy of the app, even when it runs from a plain folder
@@ -785,23 +790,23 @@ async function main() {
 
     trayAvailable = await startTrayIcon();
     if (!trayAvailable) {
-        console.error("[TRAY] No tray icon this session — the helper runs anyway. Details are in helper.log.");
+        console.error("[TRAY] No tray icon this session - the helper runs anyway. Details are in helper.log.");
     }
 
-    // First run (no saved Google login yet) — walk through the setup
+    // First run (no saved Google login yet) - walk through the setup
     // wizard in a full browser tab before ever starting server.js, so
     // the helper never runs with an unconfigured account. On every
     // later start, the token already exists and this is skipped
-    // entirely — normal startup, same as before.
+    // entirely - normal startup, same as before.
     let skipWizard = false;
     if (fs.existsSync(SKIP_WIZARD_MARKER)) {
         skipWizard = true;
         try { fs.unlinkSync(SKIP_WIZARD_MARKER); } catch {}
-        appendLog(`[TRAY] Skipping the first-run wizard (this is a post-logout relaunch, not a fresh install) — ${new Date().toISOString()}\n`);
+        appendLog(`[TRAY] Skipping the first-run wizard (this is a post-logout relaunch, not a fresh install) - ${new Date().toISOString()}\n`);
     }
 
     if (!skipWizard && !fs.existsSync(GOOGLE_TOKEN_FILE)) {
-        appendLog(`[TRAY] First run detected — launching the setup wizard — ${new Date().toISOString()}\n`);
+        appendLog(`[TRAY] First run detected - launching the setup wizard - ${new Date().toISOString()}\n`);
         try {
             const wizard = require("./setup-wizard.js");
             await wizard.runSetupWizard(msg => appendLog(`[TRAY][Setup] ${msg}\n`));
@@ -840,9 +845,9 @@ async function main() {
     refreshUpdateInfo();
     setInterval(refreshUpdateInfo, 6 * 60 * 60 * 1000); // re-check a few times a day; the module itself only actually calls GitHub once every 24h
 
-    // The engine (server.js) writes .engine-status.json on its own —
+    // The engine (server.js) writes .engine-status.json on its own -
     // e.g. once Google sign-in + the tier check finish, a few seconds
-    // after startup — with no way to directly tell the tray "refresh
+    // after startup - with no way to directly tell the tray "refresh
     // now". Without this, the menu only updates in response to clicking
     // something in the tray itself, so it can sit showing a stale
     // destination/tier (like Drive still grayed out right after a tier
@@ -852,7 +857,7 @@ async function main() {
     setInterval(checkPendingLicenseCode, 4000);
     checkPendingLicenseCode(); // also catch a code dropped just before this process started
 
-    console.log("[TRAY] Ready — helper running" + (trayAvailable ? " (tray icon active)." : " (no tray icon)."));
+    console.log("[TRAY] Ready - helper running" + (trayAvailable ? " (tray icon active)." : " (no tray icon)."));
 }
 
 process.on("SIGINT", () => {

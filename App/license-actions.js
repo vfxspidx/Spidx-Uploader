@@ -1,10 +1,11 @@
 "use strict";
+const i18n = require("./i18n.js");
 
 /* ========================================================================
  *  License code redemption + device management
  *
  *  Everything here is a POST to the same Apps Script URL used for tier
- *  checks (license.checkUrl in helper-config.json) — a Web App has one
+ *  checks (license.checkUrl in helper-config.json) - a Web App has one
  *  doGet (tier checks) and one doPost (this) at the same URL, and doPost
  *  dispatches on body.action:
  *
@@ -13,7 +14,7 @@
  *    "removeDevice"  free one of your slots  -> removeDevice(deviceId)
  *
  *  The idToken proves who's asking (same Google-verified identity as the
- *  tier check — see license.js/google-auth.js), so Apps Script never has
+ *  tier check - see license.js/google-auth.js), so Apps Script never has
  *  to trust a client-supplied email, and can only ever touch the caller's
  *  own devices.
  *
@@ -69,7 +70,7 @@ function postJson(urlString, body) {
                 // then 302-redirects to a separate, static
                 // script.googleusercontent.com URL that just serves the
                 // response body. That target is content, not another
-                // execution — it must be followed with GET, never POST,
+                // execution - it must be followed with GET, never POST,
                 // or re-POSTing can hit doPost() will observe a URL that
                 // doesn't run the script at all and returns something
                 // that isn't the JSON we expect.
@@ -113,13 +114,13 @@ function clearLicenseCache() {
     try {
         if (fs.existsSync(CACHE_FILE)) fs.unlinkSync(CACHE_FILE);
     } catch {
-        // Non-fatal — worst case the old cached tier is served for up to
+        // Non-fatal - worst case the old cached tier is served for up to
         // 24h until it naturally expires.
     }
 }
 
 // Returns { ok, tier, trialDaysRemaining, message, ambiguous? }. Never
-// throws — network/parse failures come back as { ok: false, message }
+// throws - network/parse failures come back as { ok: false, message }
 // just like a code the server itself rejected, EXCEPT for the one case
 // handled specially below (see the big comment past the postJson call).
 async function redeemLicenseCode(code) {
@@ -136,7 +137,7 @@ async function redeemLicenseCode(code) {
         idToken = await googleAuth.getIdToken();
         email = await googleAuth.getUserEmail();
     } catch (err) {
-        return { ok: false, message: `Could not get a Google sign-in token: ${err.message}` };
+        return { ok: false, message: i18n.t("Could not get a Google sign-in token: {error}", { error: err.message }) };
     }
 
     let raw = null;
@@ -152,10 +153,10 @@ async function redeemLicenseCode(code) {
         try { parsed = JSON.parse(raw); } catch { /* falls through to the ambiguous branch below */ }
     }
 
-    // A clean, well-formed answer from Apps Script — trust it as-is,
+    // A clean, well-formed answer from Apps Script - trust it as-is,
     // nothing more to do.
     if (parsed && parsed.ok === false) {
-        return { ok: false, message: parsed.message || "Code could not be redeemed." };
+        return { ok: false, message: parsed.message || i18n.t("Code could not be redeemed.") };
     }
     if (parsed && parsed.ok === true) {
         clearLicenseCache();
@@ -165,13 +166,13 @@ async function redeemLicenseCode(code) {
     // Ambiguous case: a network hiccup, or a response we couldn't parse
     // (this is exactly the failure mode that used to leave someone with a
     // scary "Unexpected response" error even though doPost() had already
-    // written the redemption server-side — see the fixed postJson()
+    // written the redemption server-side - see the fixed postJson()
     // redirect handling above). We genuinely don't know whether the
     // redemption landed from this response alone, so instead of just
     // erroring, force a fresh (cache-bypassing) tier check and report
     // whatever's actually true right now. If the code *did* land, this
     // picks it up automatically with no extra click; if it didn't, the
-    // tier just comes back unchanged and the message says so plainly —
+    // tier just comes back unchanged and the message says so plainly -
     // either way the user sees ground truth, not a guess.
     clearLicenseCache();
     try {
@@ -181,16 +182,16 @@ async function redeemLicenseCode(code) {
             ambiguous: true,
             tier: result.tier,
             trialDaysRemaining: result.trialDaysRemaining,
-            message: "Couldn't confirm the redemption directly, so this is your freshly-checked current tier instead."
+            message: i18n.t("Couldn't confirm the redemption directly, so this is your freshly-checked current tier instead.")
         };
     } catch {
-        return { ok: false, message: networkErrorMessage || "Unexpected response from the license server." };
+        return { ok: false, message: networkErrorMessage || i18n.t("Unexpected response from the license server.") };
     }
 }
 
 // Shared plumbing for the device actions: sign-in token + POST + parse.
 // Returns the parsed JSON body, or { ok: false, message } on any failure.
-async function postAction(action, extra) {
+let postAction = async function postAction(action, extra) {
     const checkUrl = readCheckUrl();
     if (!checkUrl) return { ok: false, message: 'No "license.checkUrl" set in helper-config.json.' };
 
@@ -198,17 +199,17 @@ async function postAction(action, extra) {
     try {
         idToken = await require("./google-auth.js").getIdToken();
     } catch (err) {
-        return { ok: false, message: `Could not get a Google sign-in token: ${err.message}` };
+        return { ok: false, message: i18n.t("Could not get a Google sign-in token: {error}", { error: err.message }) };
     }
 
     try {
         const raw = await postJson(checkUrl, Object.assign({ idToken, action }, extra || {}));
         const parsed = JSON.parse(raw);
-        return parsed && typeof parsed === "object" ? parsed : { ok: false, message: "Unexpected response from the license server." };
+        return parsed && typeof parsed === "object" ? parsed : { ok: false, message: i18n.t("Unexpected response from the license server.") };
     } catch (err) {
-        return { ok: false, message: err.message || "Could not reach the license server." };
+        return { ok: false, message: err.message || i18n.t("Could not reach the license server.") };
     }
-}
+};
 
 // Returns { ok, devices: [{ deviceId, addedAt, isThisDevice }], thisDeviceId }.
 async function listDevices() {
@@ -233,4 +234,55 @@ async function removeDevice(deviceId) {
     return result;
 }
 
-module.exports = { redeemLicenseCode, listDevices, removeDevice };
+// ---- free plan: monthly video-render allowance, counted on the SERVER ---------------------------------
+// commit = true  -> "may I count this render?" (key = a stable id of the video file; asking twice counts once)
+// commit = false -> "how many have I used?" (no key needed)
+// -> { ok: true, allowed, used, limit (null = unlimited), month }   the answer was signed by the server
+//    { ok: false, message }                                         no answer we can trust (offline, busy, forged)
+async function requestRenderPermit(key, commit) {
+    const license = require("./license.js");
+    let email;
+    try {
+        email = await require("./google-auth.js").getUserEmail();
+    } catch (err) {
+        return { ok: false, message: "No Google sign-in: " + err.message };
+    }
+    const deviceId = license.getOrCreateDeviceId();
+    let answer;
+    try {
+        answer = await postAction(commit ? "renderPermit" : "renderUsage", { deviceId, key: key || "" });
+    } catch (err) {
+        return { ok: false, message: err.message || "Could not reach the license server." };   // never throws: the caller decides what offline means
+    }
+    if (!answer || answer.ok !== true) return { ok: false, message: (answer && answer.message) || "No answer from the license server." };
+    const verdict = license.verifyRenderAnswer(answer, { email: String(email).trim().toLowerCase(), deviceId, key: key || "" });
+    if (!verdict.ok) return { ok: false, message: "The license server's answer failed verification (" + verdict.reason + ")." };
+    return { ok: true, allowed: answer.allowed === true, used: Number(answer.used) || 0, limit: answer.limit == null ? null : Number(answer.limit), month: String(answer.month || "") };
+}
+
+// ---- Thumbnail Pack content ------------------------------------------------------------------------------
+// -> { ok: true, entitled, version, items: [{ path, file, sha256, size }] }   (signed answer, verified here)
+//    { ok: false, message }                                                   (no answer we can trust)
+async function requestPackManifest() {
+    const license = require("./license.js");
+    let email;
+    try { email = await require("./google-auth.js").getUserEmail(); } catch (err) { return { ok: false, message: "No Google sign-in: " + err.message }; }
+    const deviceId = license.getOrCreateDeviceId();
+    let answer;
+    try { answer = await postAction("packManifest", { deviceId }); } catch (err) { return { ok: false, message: err.message || "Could not reach the license server." }; }
+    if (!answer || answer.ok !== true) return { ok: false, message: (answer && answer.message) || "No answer from the license server." };
+    const verdict = license.verifyPackManifest(answer, { email: String(email).trim().toLowerCase(), deviceId });
+    if (!verdict.ok) return { ok: false, message: "The pack manifest failed verification (" + verdict.reason + ")." };
+    return { ok: true, entitled: verdict.entitled, version: verdict.version, items: verdict.items };
+}
+
+// -> { ok: true, buffer } | { ok: false, message }
+async function requestPackFile(file) {
+    const deviceId = require("./license.js").getOrCreateDeviceId();
+    let answer;
+    try { answer = await postAction("packFile", { deviceId, file }); } catch (err) { return { ok: false, message: err.message || "Could not reach the license server." }; }
+    if (!answer || answer.ok !== true || typeof answer.data !== "string") return { ok: false, message: (answer && answer.message) || "No file in the answer." };
+    return { ok: true, buffer: Buffer.from(answer.data, "base64") };
+}
+
+module.exports = { redeemLicenseCode, listDevices, removeDevice, requestRenderPermit, requestPackManifest, requestPackFile, _setPostActionForTests: fn => { postAction = fn; } };

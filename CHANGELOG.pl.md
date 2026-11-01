@@ -1,94 +1,34 @@
-# Spidx Uploader 2.8.0 — co nowego
+# Spidx Uploader 3.0.0 - co nowego
 
-**W skrócie:** wysyłanie klatki jednym skrótem klawiszowym, presety klientów, historia uploadów i nowa przeglądarka szablonów w panelu Premiere Pro. Do tego sporo poprawek, dzięki którym instalacja i aktualizacja paneli działa sprawniej.
+**W skrócie:** nowy silnik SE 3. Renderuj wideo prosto z Premiere Pro lub VEGAS Pro i wysyłaj je na Google Drive lub WorkUpload, a cały Dashboard mówi teraz w 9 językach.
 
----
+## Nowości
+- **Render i upload wideo** (Premiere Pro, VEGAS Pro): wybierasz własny preset/szablon renderu, program renderuje (bez dodatkowej kompresji), a helper wysyła gotowy plik. Klipy od 1 s do 30 min.
+- **Wznawialny upload na Google Drive** dla dużych plików: postęp i prędkość na żywo w Dashboardzie, przycisk Anuluj, odporność na zrywanie sieci oraz kontynuacja po restarcie lub awarii.
+- **Języki:** angielski, polski, niemiecki, francuski, hiszpański, portugalski (BR), włoski, turecki, rosyjski - Dashboard, kreator, tray. Zmiana w Dashboard → Language (Auto = język Windows).
+- Pliki wideo są pobierane dopiero po pełnym zapisie, więc niedorenderowany plik nigdy nie poleci.
+- **Przebudowany Dashboard:** boczne menu (Overview, History, Activity, Templates, Settings, Status, Account), status na żywo, ostatnie uploady, historia z miniaturami i filtrami, wyszukiwarka w ustawieniach z autozapisem, strona Status z kontrolami i raportem do skopiowania, jasny/ciemny motyw oraz baner o nowej wersji aplikacji lub paneli.
+- **Szablony (Dashboard):** dodawanie plików .aep i przypisanie kompozycji oraz warstwy tekstowej do szablonu bez ręcznej edycji `templates.json`; zakładka SPT w After Effects odczytuje listę przy każdym otwarciu.
+- **Leaderboard** idzie teraz przez helpera, więc panele After Effects / Premiere nie działają już z wyłączonymi zabezpieczeniami Chromium (`--disable-web-security` zniknęło). Żeby Leaderboard się wczytał, helper musi działać.
+- **Render (After Effects / Premiere):** nazwy ze spacjami nie powodują już błędu „brak pliku”, podczas renderu widać zegar, a błędy mówią, co zgłosił AE lub Premiere.
+- **Dowód licencji związany z komputerem:** po zainstalowaniu klucza RSA aplikacja wymaga też drugiego podpisu, ważnego tylko na komputerze, dla którego został wydany, więc plik licencji skopiowany na inny komputer nie działa. Dowód działa offline przez 14 dni.
+- **Okno aktualizacji:** małe okno w stylu aplikacji (z pozycji „Update available” w zasobniku albo Dashboard > Account > Open the updater), które sprawdza wersję, pobiera instalator z postępem i przyciskiem Anuluj, uruchamia go oraz potrafi sprawdzić i naprawić zainstalowane panele.
+- **Limit renderów liczony na serwerze:** 15 renderów w miesiącu w planie darmowym liczy teraz serwer licencji, osobno dla konta Google i dla komputera (podpisane odpowiedzi; 3 rendery w miesiącu przechodzą offline i są zgłaszane później). `render-usage.json` jest tylko pamięcią podręczną odpowiedzi serwera.
+- **Paczki tylko dla miniaturek:** gdy „Files per upload” to 2 lub 3 albo paczka jest właśnie zbierana, „Render & upload” jest zablokowany w panelach After Effects, Premiere Pro i VEGAS Pro (z krótką informacją, dlaczego). Wyrenderowane wideo jest zawsze osobną wysyłką i nigdy nie trafia do paczki zdjęć.
+- **WorkUpload znosi zamkniętą kartę:** jeśli karta WorkUpload albo okno przeglądarki zostanie zamknięte w trakcie wysyłki, helper zauważa to od razu (pętle oczekiwania sprawdzały martwą stronę przez minuty, a przy dużym wideo nawet godziny), otwiera nową kartę i zaczyna wysyłkę od nowa, bez zużywania próby (do 3 razy). Wysyłka, która mimo to się nie uda, jest zapamiętana i można ją ponowić przyciskiem „Retry now” w Overview Dashboardu; pliki nigdy nie są usuwane przez błąd. Karta, którą otworzysz sam, nie jest już przejmowana przez helpera.
+- **Treść Thumbnail Pack dostarcza serwer, a nie instalator:** szablony i presety After Effects oraz szablony MOGRT do Premiere Pro nie są już w instalatorze ani w panelach. Serwer licencji wydaje je tylko kontu, które ma Pack (rola SPT albo dev / tester), i tylko na jednym z jego zarejestrowanych komputerów; helper pobiera je do `%APPDATA%\Spidx Uploader\pack`, sprawdza każdy plik podpisaną sumą kontrolną, dba o aktualność i usuwa je, gdy konto straci Pack. Dashboard > Templates pokazuje stan, ma przycisk Synchronizuj teraz i trzyma własne szablony użytkownika osobno. Konfiguracja dla właściciela: `Tools\PACK-README.txt`.
+- **Panele w 9 językach:** panele After Effects, Premiere Pro i VEGAS Pro podążają teraz za językiem wybranym w Dashboardzie (helper przekazuje im słownik). Napisy bez tłumaczenia oraz te z nazwami lub liczbami zostają po angielsku.
+- **Nowy wygląd kreatora i instalatora:** kreator pierwszego uruchomienia otwiera się we własnym oknie aplikacji w tym samym szklanym stylu co Dashboard i okno aktualizacji, a instalator Inno ma nowe grafiki.
+- **Porządki:** usunięto martwe komunikaty „wymaga Pro” dla Premiere Pro i VEGAS Pro, nieużywane pole we wtyczce VEGAS oraz nieaktualne zdania w README.
+- **Rozmiar panelu VEGAS Pro:** panel podąża teraz za skalowaniem ekranu (100% = normalny rozmiar, 125%, 150% itd. skalują się razem z Windowsem), a nie za stałym powiększeniem 1,3×, więc jest tak duży jak własny interfejs VEGAS na każdym komputerze, a cały panel jest o około jedną czwartą niższy. Ręcznie ustawisz to kluczem `panelScale` w `%APPDATA%\Spidx Uploader\vegas-panel-config.json`; stary, zapisywany automatycznie `uiScale` jest ignorowany.
+- **Panel VEGAS Pro w wąskim oknie:** nagłówek nie ucina już nazwy (plakietka planu skraca się do „TESTER”, a w bardzo wąskim oknie nazwa lekko się zmniejsza i znika małe „S”), a przycisk „Photoshop + Upload” zawija się na dwie linie („PS + Upload”, gdy i to się nie mieści) zamiast być ucięty.
+- **Nowe plany:** wersja darmowa zawiera teraz panel Premiere Pro i wtyczkę VEGAS Pro oraz 15 renderów wideo w miesiącu kalendarzowym (Render & upload, liczone łącznie dla wszystkich aplikacji; zdjęcia nie są liczone). Pro ma nieograniczone rendery i uploady. Dashboard pokazuje licznik i ostrzega przed limitem, a panele ostrzegają przed renderem, który zostałby odrzucony. Wideo ponad limit trafia do `incoming\rejected` i nigdy nie jest usuwane.
+- **Nowe logo:** gradientowe „S” jest teraz logo wszędzie: w Dashboardzie, kreatorze, zasobniku, skrócie na pulpicie i w ikonach paneli After Effects i Premiere Pro (panel Photoshop zachowa starą ikonę do czasu przebudowy).
+- Panele mają ten sam szklany wygląd co Dashboard. HTML/CSS/JS Dashboardu przeniesiono z `dashboard.js` do `App\dashboard-ui\`.
 
-## ✨ Nowości
-
-### Wysyłanie klatki jednym skrótem
-Naciśnij **Ctrl+Alt+U**, gdy na wierzchu jest After Effects, Premiere Pro, Photoshop albo VEGAS Pro, a bieżąca klatka zostanie wysłana — tak, jakbyś kliknął *Upload* w panelu Spidx.
-**Ctrl+Alt+Shift+U** robi to samo trasą Camera Raw przez Photoshopa (*Photoshop + Upload*, Pro).
-- Skrót zmienisz lub wyłączysz w **Dashboard → Settings → Global shortcut**.
-- Za darmo dla wszystkich.
-- Panel Spidx musi być otwarty w tym programie (*Window → Extensions*). Jeśli nie jest, pojawi się krótka informacja.
-
-### Presety klientów
-Zapisz bieżące ustawienia — cel uploadu, folder Google Drive, kompresję obrazu i akcję Camera Raw — jako preset z nazwą (np. *„Klient A"*) i przełączaj się między nimi jednym kliknięciem.
-- Presetami zarządzasz w **Dashboard → Settings → Client presets**.
-- Przełączasz je też bezpośrednio w panelach **After Effects** i **Premiere Pro** (nowa lista *Preset*).
-- Pokazuje **„Active (modified)"**, gdy po zastosowaniu presetu zmienisz jakieś ustawienie.
-- Za darmo dla wszystkich.
-
-### Historia uploadów
-Nowa zakładka **History** w Dashboardzie: ostatnie uploady (do 500) z linkami. Możesz ponownie skopiować link, szukać po nazwie pliku lub kliencie, usuwać wpisy albo wyczyścić listę. Dane zostają tylko na Twoim komputerze.
-
-### Premiere Pro: szablony MOGRT (dodatek SPT)
-Nowa zakładka **MOGRT** zamienia szablony motion graphics w przeglądarkę: miniatury, kategorie (Eliminations, Damage…), wyszukiwarka i animowane podglądy po najechaniu myszą.
-- **Kliknij szablon**, a trafi na oś czasu w miejscu kursora, na wolną ścieżkę wideo nad V1. Nigdy nie rusza Twojego materiału.
-- Wpisz nick (albo kliknij gracza w zakładce *Leaderboard*) i wpisze się sam do grafiki (Pro).
-- Nic nie trzeba wcześniej instalować w Premiere.
-- Część **Spidx Thumbnail Pack V3** (sprzedawany osobno; w rolach Dev i Tester wliczone). Panel Premiere Pro można zainstalować z licencją Pro **albo** z Packiem.
-
-### Plugin VEGAS Pro jest częścią aplikacji
-Zainstalujesz go w kreatorze albo w **Dashboard → Account → Plugins**. Sam buduje plugin pod Twoją wersję VEGAS-a. Wysyłanie z VEGAS Pro wymaga planu **Pro**.
-Panel VEGAS ma nowy wygląd, zgodny z pozostałymi panelami, skaluje się z oknem i ma płynne animacje.
-
-### Ustawienia kompresji obrazu
-**Dashboard → Settings:** włącz lub wyłącz kompresję i wybierz docelowy rozmiar pliku. Presety mogą mieć inny rozmiar dla każdego klienta.
-
-### Regulamin, EULA i Polityka prywatności
-Linki do Regulaminu, umowy licencyjnej (EULA), Polityki prywatności i zasad zwrotów są w Dashboardzie (karta *Support & legal* i stopka na każdej zakładce). Nowe instalacje akceptują je raz w kreatorze, a obecni użytkownicy widzą krótki baner. Zapytamy ponownie dopiero, gdy teksty się zmienią.
-
-### Self-test i diagnostyka
-**Dashboard → Account → Diagnostics** sprawdza wszystko, czego potrzebuje uploader (Node, helper, foldery, logowanie Google, licencja, internet, pluginy) i prostymi słowami mówi, co jest nie tak. *Create diagnostics file* pakuje logi i wersje dla supportu — maile, tokeny i nazwa użytkownika są usuwane. Dostępne też z menu przy ikonie tray'a.
-
-### Aktualizacje pluginów w aplikacji
-Dashboard (i tray) informują, gdy jest nowszy plugin do After Effects, Premiere Pro, VEGAS-a lub Photoshopa, i mogą go pobrać. Potem klikasz *Update* przy pluginie.
-
-### Łączone role licencji
-Licencja może mieć kilka ról naraz (np. **Pro + SPT**), widocznych w Dashboardzie i panelach.
+## Uwagi
+- Render w VEGAS jest nowy i wymaga ponownego zbudowania wtyczki (`build.bat`).
+- Panele (Premiere, After Effects, VEGAS, Photoshop) na razie tylko po angielsku.
 
 ---
 
-## 🔧 Ulepszenia
-- **Instalator panelu Photoshop** uruchamia teraz instalator Adobe jako administrator i pokazuje prawdziwy wynik. Obniżono też minimalną wersję Photoshopa wymaganą przez panel.
-- **Panel Premiere Pro** pamięta folder incoming, liczbę plików i inne ustawienia nawet po aktualizacji panelu, a po świeżej instalacji sam znajduje folder incoming.
-- **Funkcje blokowane planem są zablokowane**, dopóki uploader nie pozna Twojego planu (2–3 pliki naraz, *Photoshop + Upload*, Properties).
-- **Bezpieczniejsze sprawdzanie licencji.** Zmienione lub wygasłe lokalne dane licencji są ignorowane. Mocniejszą weryfikację podpisu można włączyć później bez aktualizacji aplikacji.
-- **Dashboard:** stopka pokazuje wersję, a karta Support ma linki do Regulaminu i Polityki prywatności.
-
-## 🐞 Poprawki
-- Aplikacja w tray'u czasem nie chciała się uruchomić („already running") po restarcie lub awarii albo zostawiała niewidoczny proces.
-- Po pojawieniu się informacji o aktualizacji w menu tray'a mogła uruchomić się zła pozycja menu.
-- Gdy aplikacja w tray'u nie wystartowała bez okna, nic nie było widać — teraz pojawia się komunikat.
-- Panel Photoshop: Dashboard potrafił napisać *„installed"*, gdy instalator Adobe się nie powiódł, albo *„not installed"* tuż po udanej instalacji. Panel After Effects (o tej samej nazwie) bywał brany za panel Photoshopa.
-- Panel Premiere Pro: 2–3 pliki naraz i inne funkcje Pro dało się używać, zanim plan był znany.
-- Szablony Premiere trafiały do folderu, którego Premiere nie czyta — teraz są wstawiane bezpośrednio.
-- Panel VEGAS Pro: awaria przy zmianie regionu w Leaderboardzie, lista rozwijana, która zostawała otwarta, nakładający się tekst na wyłączonych przyciskach.
-- Instalator Windows: mógł zakończyć niezwiązany program o ponownie użytym numerze procesu (teraz tylko własny proces uploadera), nie zawierał szablonów Premiere i nie kompilował się w nowszym Inno Setup.
-- Komunikaty kompilatora pluginu VEGAS i programu skrótu były nieczytelne na polskim Windowsie.
-
----
-
-## 📦 Wersje w tym wydaniu
-
-| Część | Wersja |
-|---|---|
-| Spidx Uploader (aplikacja + instalator) | **2.8.0** |
-| Panel After Effects | **2.8.0** |
-| Panel Premiere Pro | **2.8.0** |
-| Panel Photoshop | **2.8.0** |
-| Plugin VEGAS Pro | **2.8.0** |
-
-## ⬆️ Jak zaktualizować
-1. Zamknij After Effects, Premiere Pro, Photoshopa i VEGAS Pro. Zamknij aplikację Spidx w tray'u.
-2. Zainstaluj nową wersję (lub podmień pliki) i uruchom **Spidx Uploader**.
-3. Wejdź w **Dashboard → Account → Plugins** i kliknij **Update** przy każdym pluginie (programy muszą być zamknięte). Przy Photoshopie pojawi się okno administratora Windows; po instalacji zrestartuj Photoshopa.
-4. W Dashboardzie przeczytaj i zaakceptuj baner z Regulaminem / Polityką prywatności.
-
-## ℹ️ Warto wiedzieć
-- Pierwszy start buduje mały program skrótu (kilka sekund). Używa kompilatora, który jest w Windowsie.
-- Skrót działa w programach z **nowym** panelem Spidx — zaktualizuj wszystkie pluginy.
-- Przełączanie presetów z panelu działa w After Effects i Premiere Pro; w Photoshopie i VEGAS Pro użyj Dashboardu.
-- Starsze wersje pluginu VEGAS nie podlegają wymogowi Pro — zaktualizuj plugin.
